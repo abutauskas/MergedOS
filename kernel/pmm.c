@@ -126,6 +126,37 @@ void pmm_free(u64 phys)
 	irq_restore(flags);
 }
 
+/* n physically contiguous zeroed frames (first-fit), 0 when none. */
+u64 pmm_alloc_contig(u64 n)
+{
+	u64 flags = irq_save(), run = 0, used;
+
+	for (u64 f = 0; f < nframes && n; f++) {
+		run = frame_used(f) ? 0 : run + 1;
+		if (run == n) {
+			u64 first = f + 1 - n;
+
+			for (u64 i = first; i <= f; i++)
+				frame_set(i);
+			stats.free_frames -= n;
+			used = stats.usable_frames - stats.free_frames;
+			if (used > stats.peak_used_frames)
+				stats.peak_used_frames = used;
+			irq_restore(flags);
+			memset(phys_to_virt(first << PAGE_SHIFT), 0, n << PAGE_SHIFT);
+			return first << PAGE_SHIFT;
+		}
+	}
+	irq_restore(flags);
+	return 0;
+}
+
+void pmm_free_contig(u64 phys, u64 n)
+{
+	for (u64 i = 0; i < n; i++)
+		pmm_free(phys + (i << PAGE_SHIFT));
+}
+
 void pmm_get_stats(struct pmm_stats *out)
 {
 	*out = stats;

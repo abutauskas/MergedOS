@@ -53,8 +53,12 @@ static void trace2(const char *what, const char *name)
 #define VIEW_MAX_PX   (256 * 192)
 #define VIEW_SCRATCH  (200 * 1024)
 
-static u8 view_rgb[VIEW_MAX_PX * 3];
-static u8 view_scratch[VIEW_SCRATCH];
+#define VIEW_RGB_BYTES  (VIEW_MAX_PX * 3)
+#define VIEW_PAGES(b)   (((b) + PAGE_SIZE - 1) / PAGE_SIZE)
+
+/* Allocated while the Viewer is open (or for one decode), freed on close. */
+static u8 *view_rgb, *view_scratch;
+static u64 view_rgb_phys, view_scratch_phys;
 static struct ft_doc vdoc;
 static struct ft_image vimg;
 static unsigned vview;                  /* FT_VIEW_* shown                  */
@@ -64,6 +68,29 @@ static char vreq_path[128];
 static volatile u32 vreq_seq;
 
 enum { TAB_TEXT, TAB_HEX, TAB_IMAGE, TAB_INFO, TAB_UP, TAB_DOWN, TAB_COUNT };
+
+static bool view_buffers_get(void)
+{
+	if (!view_rgb_phys)
+		view_rgb_phys = pmm_alloc_contig(VIEW_PAGES(VIEW_RGB_BYTES));
+	if (!view_scratch_phys)
+		view_scratch_phys = pmm_alloc_contig(VIEW_PAGES(VIEW_SCRATCH));
+	view_rgb = view_rgb_phys ? phys_to_virt(view_rgb_phys) : NULL;
+	view_scratch = view_scratch_phys ? phys_to_virt(view_scratch_phys) : NULL;
+	return view_rgb && view_scratch;
+}
+
+static void view_buffers_put(void)
+{
+	if (view_rgb_phys)
+		pmm_free_contig(view_rgb_phys, VIEW_PAGES(VIEW_RGB_BYTES));
+	if (view_scratch_phys)
+		pmm_free_contig(view_scratch_phys, VIEW_PAGES(VIEW_SCRATCH));
+	view_rgb_phys = view_scratch_phys = 0;
+	view_rgb = view_scratch = NULL;
+	memset(&vdoc, 0, sizeof(vdoc));
+	memset(&vimg, 0, sizeof(vimg));
+}
 
 /* Which action the i-th visible tab stands for, or -1. */
 static int view_tab(int i)
@@ -339,6 +366,8 @@ static void launcher(enum desk_action a)
 		/* Tiles have no close button: a launcher toggles its focused window. */
 		if (desk.tiled && w && w->id == desktop_top(&desk) && kind != DESK_WIN_TERMINAL) {
 			(void)desktop_close(&desk, w->id);
+			if (kind == DESK_WIN_VIEWER)
+				view_buffers_put();
 			trace2("window close ", desktop_kind_name(kind));
 		} else if ((w = desktop_window(&desk, desktop_launch(&desk, kind, &opened)))) {
 			const struct desk_rect t = desktop_title_rect(&desk, w);
@@ -382,11 +411,16 @@ static void viewer_open(const char *path)
 		trace2("viewer: no such file ", path);
 		return;
 	}
-	ft_doc_open(&vdoc, data, size, path, view_scratch, sizeof(view_scratch));
+	if (!view_buffers_get()) {
+		view_buffers_put();
+		trace2("viewer: out of memory for ", path);
+		return;
+	}
+	ft_doc_open(&vdoc, data, size, path, view_scratch, VIEW_SCRATCH);
 	vimg.rgb = NULL;
 	if (vdoc.views & FT_VIEW_IMAGE) {
-		rc = ft_image_decode(data, size, view_rgb, sizeof(view_rgb), view_scratch,
-				     sizeof(view_scratch), &vimg);
+		rc = ft_image_decode(data, size, view_rgb, VIEW_RGB_BYTES, view_scratch,
+				     VIEW_SCRATCH, &vimg);
 		if (rc) {
 			vdoc.views &= ~FT_VIEW_IMAGE;
 			ksnprintf(vdoc.note, sizeof(vdoc.note), "image not shown: %s",
@@ -471,6 +505,8 @@ static void press(int x, int y)
 		break;
 	case DESK_PART_CLOSE:
 		trace2("window close ", desktop_kind_name(w->kind));
+		if (w->kind == DESK_WIN_VIEWER)
+			view_buffers_put();
 		(void)desktop_close(&desk, h.win);
 		break;
 	case DESK_PART_MINIMISE:
@@ -658,8 +694,13 @@ int desktop_view_decode(const u8 *data, size_t len, u32 *w, u32 *h)
 
 	if (running)
 		return -MERR_AGAIN;
-	rc = ft_image_decode(data, len, view_rgb, sizeof(view_rgb), view_scratch,
-			     sizeof(view_scratch), &im);
+	if (!view_buffers_get()) {
+		view_buffers_put();
+		return -MERR_NOMEM;
+	}
+	rc = ft_image_decode(data, len, view_rgb, VIEW_RGB_BYTES, view_scratch,
+			     VIEW_SCRATCH, &im);
+	view_buffers_put();
 	*w = im.w;
 	*h = im.h;
 	return rc;

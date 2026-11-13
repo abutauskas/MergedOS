@@ -41,6 +41,8 @@ struct pmm_stats {
 void pmm_init(const struct boot_info *bi);
 u64  pmm_alloc(void);               /* zeroed 4 KiB frame, 0 when out of memory */
 void pmm_free(u64 phys);
+u64  pmm_alloc_contig(u64 n);       /* n contiguous zeroed frames, 0 on OOM  */
+void pmm_free_contig(u64 phys, u64 n);
 void pmm_get_stats(struct pmm_stats *out);
 
 /* ---- Virtual memory (vmm.c) --------------------------------------------- */
