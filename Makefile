@@ -122,8 +122,7 @@ KERNEL_C := \
 KERNEL_S := \
 	kernel/arch/x86_64/boot.S \
 	kernel/arch/x86_64/entry.S \
-	kernel/initrd_blob.S \
-	kernel/ntrt_blob.S
+	kernel/initrd_blob.S
 
 TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c
 
@@ -142,7 +141,7 @@ KCFLAGS := -std=gnu11 -Os -g $(WARNINGS) \
 	-mno-red-zone -mcmodel=kernel -mgeneral-regs-only \
 	-fno-asynchronous-unwind-tables -fno-tree-loop-distribute-patterns \
 	-DMERGEDOS_VERSION=\"$(VERSION)\" $(INCLUDES)
-KASFLAGS := $(INCLUDES) -DINITRD_FILE=\"$(INITRD)\" -DNTRT_FILE=\"$(NTRT_BIN)\"
+KASFLAGS := $(INCLUDES) -DINITRD_FILE=\"$(INITRD)\"
 KLDFLAGS := -n -nostdlib -z max-page-size=0x1000 -z noexecstack \
 	-T kernel/arch/x86_64/linker.ld \
 	$(shell $(LD) --help 2>/dev/null | grep -q no-warn-rwx-segments && echo --no-warn-rwx-segments)
@@ -165,7 +164,6 @@ $(BUILD)/obj/%.o: %.S
 	$(CC) $(KASFLAGS) -MMD -MP -c $< -o $@
 
 $(BUILD)/obj/kernel/initrd_blob.o: $(INITRD)
-$(BUILD)/obj/kernel/ntrt_blob.o: $(NTRT_BIN)
 
 # ---- built-in Win32 runtime ---------------------------------------------------
 #
@@ -307,6 +305,18 @@ $(WINE_TAR): Makefile
 	@mv $@.tmp $@
 	@echo "built $@ ($$(($$(stat -c %s $@) / 1024)) KiB)"
 
+# The boot module QEMU / GRUB hand to the kernel: MergedOS's ntdll runtime
+# (sys/ntrt.bin, user space, loaded per NT process) plus Wine's DLLs when
+# `make wine` has fetched them. Module frames are not kernel footprint.
+USER_TAR := $(BUILD)/boot/user.tar
+
+$(USER_TAR): $(NTRT_BIN) FORCE | wine-optional
+	@rm -rf $(BUILD)/boot/stage && mkdir -p $(BUILD)/boot/stage/sys $(BUILD)/boot/stage/windows
+	@[ -d $(WINE_DIR)/stage/windows ] && cp -a $(WINE_DIR)/stage/windows/. $(BUILD)/boot/stage/windows/ || true
+	@cp $(NTRT_BIN) $(BUILD)/boot/stage/sys/ntrt.bin
+	@tar --format=ustar --owner=0 --group=0 -cf $@.tmp -C $(BUILD)/boot/stage sys windows
+	@mv $@.tmp $@
+
 .PHONY: FORCE
 FORCE:
 
@@ -344,12 +354,12 @@ test: test-host test-boot test-disk test-e2e
 test-host: $(BUILD)/host/run_tests $(BUILD)/fixtures/.stamp
 	$(BUILD)/host/run_tests
 
-test-boot: $(KERNEL_ELF32) wine-optional
-	QEMU=$(QEMU) QEMU_MEM=$(QEMU_MEM) WINE_TAR=$(WINE_TAR) tools/boot-test.sh $(KERNEL_ELF32)
+test-boot: $(KERNEL_ELF32) $(USER_TAR)
+	QEMU=$(QEMU) QEMU_MEM=$(QEMU_MEM) BOOT_MODULE=$(USER_TAR) tools/boot-test.sh $(KERNEL_ELF32)
 
 # Install onto an emulated dual-boot IDE disk; prove existing partitions are untouched.
-test-disk: $(KERNEL_ELF32)
-	QEMU=$(QEMU) PYTHON=$(PYTHON) tools/disk-test.sh $(KERNEL_ELF32)
+test-disk: $(KERNEL_ELF32) $(USER_TAR)
+	QEMU=$(QEMU) PYTHON=$(PYTHON) BOOT_MODULE=$(USER_TAR) tools/disk-test.sh $(KERNEL_ELF32)
 
 # Wizard -> save -> reset -> login (wrong, then right password) -> saved desktop.
 test-e2e: $(KERNEL_ELF32)
@@ -361,22 +371,23 @@ QEMU_FLAGS := -m $(QEMU_MEM) -no-reboot \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
 .PHONY: run run-serial
-WINE_INITRD = $(if $(wildcard $(WINE_TAR)),-initrd $(WINE_TAR))
-run: $(KERNEL_ELF32)
-	$(QEMU) $(QEMU_FLAGS) -kernel $< $(WINE_INITRD) -serial stdio -append "$(APPEND)"
+MODULE_INITRD = -initrd $(USER_TAR)
+run: $(KERNEL_ELF32) $(USER_TAR)
+	$(QEMU) $(QEMU_FLAGS) -kernel $< $(MODULE_INITRD) -serial stdio -append "$(APPEND)"
 
-run-serial: $(KERNEL_ELF32)
-	$(QEMU) $(QEMU_FLAGS) -kernel $< $(WINE_INITRD) -display none -serial stdio -append "$(APPEND)"
+run-serial: $(KERNEL_ELF32) $(USER_TAR)
+	$(QEMU) $(QEMU_FLAGS) -kernel $< $(MODULE_INITRD) -display none -serial stdio -append "$(APPEND)"
 
 # ---- bootable ISO --------------------------------------------------------------
 
 .PHONY: iso
 iso: $(ISO)
 
-$(ISO): $(KERNEL_ELF) tools/grub.cfg
+$(ISO): $(KERNEL_ELF) tools/grub.cfg $(USER_TAR)
 	@command -v grub-mkrescue >/dev/null || { echo "grub-mkrescue not found"; exit 1; }
 	@rm -rf $(BUILD)/iso && mkdir -p $(BUILD)/iso/boot/grub
 	cp $(KERNEL_ELF) $(BUILD)/iso/boot/mergedos.elf
+	cp $(USER_TAR) $(BUILD)/iso/boot/user.tar
 	cp tools/grub.cfg $(BUILD)/iso/boot/grub/grub.cfg
 	grub-mkrescue -o $@ $(BUILD)/iso 2>/dev/null
 	@echo "built $@"

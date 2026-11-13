@@ -16,11 +16,11 @@
 #include <mergedos/kernel.h>
 #include <mergedos/compat.h>
 #include <mergedos/cpu.h>
+#include <mergedos/initrd.h>
 #include <mergedos/mm.h>
 #include <mergedos/task.h>
 #include "src/ntrt/ntrt_abi.h"
 
-extern const u8 ntrt_blob_start[], ntrt_blob_end[];
 
 /* Lowest address the runtime's fixed areas use, and their end. */
 #define NT_FIXED_LO  NTRT_BASE
@@ -137,13 +137,20 @@ static void nt_cmdline(char *out, size_t cap, const struct exec_args *args)
 int ntload_link(struct task *t, const u8 *image, size_t len, const struct exec_plan *plan,
 		u64 delta, const struct exec_args *args, struct user_start *start)
 {
-	const struct ntrt_header *hdr = (const void *)ntrt_blob_start;
-	const u64 blob_len = (u64)(ntrt_blob_end - ntrt_blob_start);
+	const u8 *ntrt_blob_start;
+	size_t blob_len;
+	const struct ntrt_header *hdr;
 	const struct abi_identity *id = abi_identity(ABI_NT);
 	struct ntrt_params params = { 0 };
 	u8 kuser[0x280] = { 0 };
 	int rc;
 
+	/* The runtime is a file of the boot module (user space, not kernel image). */
+	if (initrd_find("sys/ntrt.bin", &ntrt_blob_start, &blob_len)) {
+		kprintf("[nt] sys/ntrt.bin not found: no boot module with the NT runtime\n");
+		return -MERR_NOENT;
+	}
+	hdr = (const void *)ntrt_blob_start;
 	if (blob_len < sizeof(*hdr) || hdr->magic != NTRT_MAGIC || hdr->text_end <= NTRT_BASE ||
 	    hdr->image_end > NTRT_LIMIT || hdr->text_end > hdr->image_end ||
 	    NTRT_BASE + blob_len > hdr->image_end)

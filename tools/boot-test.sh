@@ -19,9 +19,9 @@ trap 'rm -f "$LOG"' EXIT
 status=0
 
 for mem in "$@"; do
-	# Wine's DLLs (make wine), when present, go in as a Multiboot module.
+	# The ntdll runtime and Wine's DLLs (when fetched) go in as a Multiboot module.
 	modarg=
-	[ -n "${WINE_TAR:-}" ] && [ -f "$WINE_TAR" ] && modarg="-initrd $WINE_TAR"
+	[ -n "${BOOT_MODULE:-}" ] && [ -f "$BOOT_MODULE" ] && modarg="-initrd $BOOT_MODULE"
 	timeout "$TIMEOUT" "$QEMU" -m "$mem" -no-reboot -display none -serial stdio \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
 		-kernel "$KERNEL" $modarg -append "selftest" >"$LOG" 2>&1
