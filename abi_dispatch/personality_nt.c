@@ -11,7 +11,9 @@
  *
  * Services: NtReadFile 0x06, NtWriteFile 0x08, NtAllocateVirtualMemory 0x18,
  * NtFreeVirtualMemory 0x1E, NtTerminateProcess 0x2C, NtQueryPerformanceCounter
- * 0x31, NtProtectVirtualMemory 0x50, NtQuerySystemTime 0x5A. The built-in
+ * 0x31, NtProtectVirtualMemory 0x50, NtQuerySystemTime 0x5A; threads:
+ * NtWaitForSingleObject 0x04, NtClose 0x0F, NtTerminateThread 0x53 and
+ * NtCreateThreadEx 0xC2. The built-in
  * Win32 runtime (src/ntrt/start.S) is the ntdll that calls them.
  *
  * Unlike the UNIX personalities, NT service numbers are NOT a stable ABI:
@@ -31,6 +33,10 @@
 #define NT_SVC_QUERY_PERFORMANCE_COUNTER 0x31
 #define NT_SVC_PROTECT_VIRTUAL_MEMORY   0x50
 #define NT_SVC_QUERY_SYSTEM_TIME        0x5A
+#define NT_SVC_WAIT_FOR_SINGLE_OBJECT   0x04
+#define NT_SVC_CLOSE                    0x0F
+#define NT_SVC_TERMINATE_THREAD         0x53
+#define NT_SVC_CREATE_THREAD_EX         0xC2
 
 #define NT_FILETIME_UNIX_EPOCH   116444736000000000ULL  /* 1970-01-01 in 100 ns units */
 
@@ -231,7 +237,88 @@ static long nt_terminate_process(struct abi_ctx *ctx, const struct abi_call *c)
 	return 0;
 }
 
+/*
+ * Threads. A thread handle is NT_THREAD_HANDLE + 4 * thread id; the thread
+ * starts at StartRoutine(Argument) and, when it returns, lands on the
+ * kernel-installed thunk that calls NtTerminateThread with its result.
+ */
+#define NT_THREAD_HANDLE      0x40000ULL
+#define NT_THREAD_EXIT_THUNK  0x7FFE1020ULL     /* second thunk in the NT thunk page */
+#define NT_CREATE_SUSPENDED   0x1
+
+static int nt_thread_id(u64 handle)
+{
+	if (handle <= NT_THREAD_HANDLE || (handle & 3) || handle > NT_THREAD_HANDLE + 0x7FFFFFFCULL)
+		return -1;
+	return (int)((handle - NT_THREAD_HANDLE) >> 2);
+}
+
+/*
+ * NTSTATUS NtCreateThreadEx(PHANDLE ThreadHandle, ACCESS_MASK DesiredAccess,
+ *     POBJECT_ATTRIBUTES ObjectAttributes, HANDLE ProcessHandle, PVOID StartRoutine,
+ *     PVOID Argument, ULONG CreateFlags, SIZE_T ZeroBits, SIZE_T StackSize,
+ *     SIZE_T MaximumStackSize, PPS_ATTRIBUTE_LIST AttributeList);
+ */
+static long nt_create_thread_ex(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	struct {
+		u64 start, arg, flags, zero_bits, stack_size, max_stack, attrs;
+	} stk;
+	u64 handle;
+	long tid;
+
+	if (uaccess_copy_in(ctx->task, &stk, c->usp + NT_STACK_ARGS_OFFSET, sizeof(stk)))
+		return -MERR_FAULT;
+	if (!nt_self(c->arg[3]))
+		return -MERR_BADF;
+	if (stk.flags & NT_CREATE_SUSPENDED)
+		return -MERR_NOTSUP;
+	tid = msys_thread_spawn(ctx->task, stk.start, stk.arg,
+				MOS_MAX(stk.stack_size, stk.max_stack), NT_THREAD_EXIT_THUNK);
+	if (tid < 0)
+		return tid;
+	handle = NT_THREAD_HANDLE + ((u64)tid << 2);
+	return uaccess_copy_out(ctx->task, c->arg[0], &handle, sizeof(handle));
+}
+
+/* NTSTATUS NtTerminateThread(HANDLE ThreadHandle, NTSTATUS ExitStatus); */
+static long nt_terminate_thread(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	if (c->arg[0] != 0 && c->arg[0] != (u64)-2)    /* NtCurrentThread() */
+		return -MERR_NOTSUP;
+	return msys_thread_exit(ctx->task, (int)(u32)c->arg[1]);
+}
+
+/* NTSTATUS NtWaitForSingleObject(HANDLE Handle, BOOLEAN Alertable, PLARGE_INTEGER Timeout); */
+static long nt_wait_for_single_object(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	int tid = nt_thread_id(c->arg[0]);
+	u64 timeout_ns = ~0ULL;
+
+	if (tid < 0)
+		return -MERR_BADF;
+	if (c->arg[2]) {
+		s64 t;
+
+		if (uaccess_copy_in(ctx->task, &t, c->arg[2], sizeof(t)))
+			return -MERR_FAULT;
+		timeout_ns = t < 0 ? (u64)-t * 100 : 0;    /* relative 100 ns units */
+	}
+	return msys_thread_join(ctx->task, tid, timeout_ns);
+}
+
+/* NTSTATUS NtClose(HANDLE Handle); */
+static long nt_close(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	(void)ctx;
+	return nt_thread_id(c->arg[0]) >= 0 || nt_handle_to_fd(c->arg[0]) >= 0 ? 0 : -MERR_BADF;
+}
+
 static const struct abi_sysent nt_sysent[] = {
+	[NT_SVC_WAIT_FOR_SINGLE_OBJECT]    = { nt_wait_for_single_object,  "NtWaitForSingleObject" },
+	[NT_SVC_CLOSE]                     = { nt_close,                   "NtClose" },
+	[NT_SVC_TERMINATE_THREAD]          = { nt_terminate_thread,        "NtTerminateThread" },
+	[NT_SVC_CREATE_THREAD_EX]          = { nt_create_thread_ex,        "NtCreateThreadEx" },
 	[NT_SVC_READ_FILE]                 = { nt_read_file,               "NtReadFile" },
 	[NT_SVC_WRITE_FILE]                = { nt_write_file,              "NtWriteFile" },
 	[NT_SVC_ALLOCATE_VIRTUAL_MEMORY]   = { nt_allocate_virtual_memory, "NtAllocateVirtualMemory" },
