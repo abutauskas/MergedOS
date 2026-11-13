@@ -80,6 +80,36 @@ struct file *fd_file(struct task *t, int fd)
 	return fd >= 0 && fd < TASK_FD_MAX ? t->fd[fd] : NULL;
 }
 
+/*
+ * Bytes of an open file for mmap. A read-only ramdisk/sysroot file returns a
+ * pointer straight into its immutable image (for demand-paged, file-backed
+ * VMAs); a writable ramfs file reports its data pointer, which the caller must
+ * copy eagerly because the buffer can move. Returns the readable length from
+ * `offset`, or -MERR_* (ENODEV for the console / a pipe).
+ */
+long vfs_mmap_source(struct task *t, int fd, u64 offset, const u8 **data, bool *immutable)
+{
+	struct file *f = fd_file(t, fd);
+
+	if (!f)
+		return -MERR_BADF;
+	if (f->type == F_ROFILE) {
+		if (offset > f->size)
+			return -MERR_INVAL;
+		*data = f->data + offset;
+		*immutable = true;
+		return (long)(f->size - offset);
+	}
+	if (f->type == F_RAMFS && !f->node->dir) {
+		if (offset > f->node->size)
+			return -MERR_INVAL;
+		*data = f->node->data + offset;
+		*immutable = false;
+		return (long)(f->node->size - offset);
+	}
+	return -MERR_NOTSUP;
+}
+
 int fd_install(struct task *t, struct file *f, int min, bool cloexec)
 {
 	for (int fd = min < 0 ? 0 : min; fd < TASK_FD_MAX; fd++) {
@@ -487,6 +517,52 @@ long msys_read(struct task *t, int fd, u64 ubuf, u64 len)
 	}
 }
 
+/* pread64: read at an explicit offset, leaving the file position untouched. */
+long msys_pread(struct task *t, int fd, u64 ubuf, u64 len, u64 offset)
+{
+	struct file *f = fd_file(t, fd);
+	const u8 *data;
+	u64 size;
+	long n;
+
+	if (!f || (f->flags & VFS_O_ACCMODE) == VFS_O_WRONLY)
+		return -MERR_BADF;
+	if (f->type == F_ROFILE) {
+		data = f->data;
+		size = f->size;
+	} else if (f->type == F_RAMFS && !f->node->dir) {
+		data = f->node->data;
+		size = f->node->size;
+	} else {
+		return -MERR_INVAL;             /* ESPIPE on a pipe/tty */
+	}
+	if (len > MSYS_IO_MAX)
+		len = MSYS_IO_MAX;
+	n = (long)MOS_MIN(len, size - MOS_MIN(offset, size));
+	if (n && uaccess_copy_out(t, ubuf, data + offset, (size_t)n))
+		return -MERR_FAULT;
+	return n;
+}
+
+/* readlink: resolves only "/proc/self/exe" to the running program's path. */
+long msys_readlink(struct task *t, u64 upath, u64 ubuf, u64 bufsize)
+{
+	char path[PATH_MAX_LEN];
+	long rc = user_path(t, upath, path);
+	size_t n;
+
+	if (rc)
+		return rc;
+	if (strcmp(path, "proc/self/exe") && strcmp(path, "proc/self/exe/"))
+		return -MERR_INVAL;             /* EINVAL: not a symlink we model */
+	n = strlen(t->exe);
+	if (n > bufsize)
+		n = bufsize;
+	if (uaccess_copy_out(t, ubuf, t->exe, n))
+		return -MERR_FAULT;
+	return (long)n;
+}
+
 static long console_out(struct task *t, u64 ubuf, u64 len)
 {
 	char chunk[128];
@@ -565,6 +641,10 @@ long msys_lseek(struct task *t, int fd, s64 offset, int whence)
 	return (long)f->pos;
 }
 
+/* Identity of the object the last msys_fstat/msys_stat looked at (a fake
+ * st_ino: C libraries compare dev/ino to tell loaded libraries apart). */
+u64 vfs_last_ino;
+
 /* Success returns the kind of object (MSYS_ST_*). */
 long msys_fstat(struct task *t, int fd, u64 *size, bool *is_tty)
 {
@@ -574,6 +654,8 @@ long msys_fstat(struct task *t, int fd, u64 *size, bool *is_tty)
 		return -MERR_BADF;
 	*is_tty = f->type == F_CONSOLE;
 	*size = f->type == F_ROFILE ? f->size : f->type == F_RAMFS ? f->node->size : 0;
+	vfs_last_ino = f->type == F_ROFILE ? (u64)(uintptr_t)f->data :
+		       f->type == F_RAMFS ? (u64)(uintptr_t)f->node : (u64)(uintptr_t)f;
 	switch (f->type) {
 	case F_CONSOLE: return MSYS_ST_TTY;
 	case F_PIPE:    return MSYS_ST_FIFO;
@@ -603,13 +685,18 @@ long msys_stat(struct task *t, u64 upath, u64 *size, bool *is_dir)
 			return rc;
 		*is_dir = n->dir;
 		*size = n->size;
+		vfs_last_ino = (u64)(uintptr_t)n;
 		return n->dir ? MSYS_ST_DIR : MSYS_ST_FILE_RW;
 	}
 	if (!initrd_find(path, &data, &len)) {
 		*size = len;
+		vfs_last_ino = (u64)(uintptr_t)data;
 		return MSYS_ST_FILE;
 	}
 	*is_dir = !*path || initrd_is_dir(path);
+	vfs_last_ino = 1;
+	for (const char *c = path; *c; c++)
+		vfs_last_ino = vfs_last_ino * 131 + (u8)*c;
 	return *is_dir ? MSYS_ST_DIR : -MERR_NOENT;
 }
 

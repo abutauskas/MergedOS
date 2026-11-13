@@ -41,6 +41,7 @@ WEAK long msys_read(struct task *t, int fd, u64 b, u64 n) NOSYS
 WEAK long msys_open(struct task *t, u64 p, u32 f) NOSYS
 WEAK long msys_close(struct task *t, int fd) NOSYS
 WEAK long msys_lseek(struct task *t, int fd, s64 o, int w) NOSYS
+WEAK u64 vfs_last_ino;
 WEAK long msys_fstat(struct task *t, int fd, u64 *s, bool *tty) NOSYS
 WEAK long msys_stat(struct task *t, u64 p, u64 *s, bool *d) NOSYS
 WEAK long msys_pipe(struct task *t, int fds[2], u32 f) NOSYS
@@ -53,7 +54,11 @@ WEAK long msys_rename(struct task *t, u64 a, u64 b) NOSYS
 WEAK long msys_readdir(struct task *t, int fd, char *n, size_t c, bool *d, u64 *i) NOSYS
 WEAK long msys_brk(struct task *t, u64 a) NOSYS
 WEAK long msys_mmap_anon(struct task *t, u64 n) NOSYS
+WEAK long msys_mmap(struct task *t, u64 a, u64 n, u32 p, u32 f, int fd, u64 o) NOSYS
 WEAK long msys_munmap(struct task *t, u64 a, u64 n) NOSYS
+WEAK long msys_pread(struct task *t, int fd, u64 b, u64 n, u64 o) NOSYS
+WEAK long msys_readlink(struct task *t, u64 p, u64 b, u64 n) NOSYS
+WEAK long msys_getrandom(struct task *t, u64 b, u64 n) NOSYS
 WEAK long msys_set_fs_base(struct task *t, u64 b) NOSYS
 WEAK long msys_get_fs_base(struct task *t, u64 a) NOSYS
 WEAK u64 msys_clock_ns(void) { return 0; }

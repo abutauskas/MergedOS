@@ -6,14 +6,12 @@
 
 extern const u8 initrd_start[], initrd_end[];
 
-/*
- * An optional second archive passed by the boot loader as a Multiboot
- * module (Wine's DLLs, see `make wine`). It is searched after the ramdisk
- * and read in place like it; the kernel never runs anything from it.
- */
-static const u8 *mod_data;
-static size_t mod_size;
-#define MOD_CURSOR (1ULL << 62)        /* initrd_next(): cursor is in the module */
+/* Boot modules that are ustar archives (sysroot, NT runtime + DLLs), merged under /. */
+static struct {
+	const u8 *data;
+	size_t len;
+} mods[BOOT_MODS_MAX];
+static unsigned nmods;
 
 static size_t initrd_size(void)
 {
@@ -41,17 +39,24 @@ void initrd_init(void)
 			files++;
 	kprintf("[initrd] %u files, %u KiB (ustar, mapped in place)\n", (unsigned)files,
 		(unsigned)(initrd_size() / 1024));
-	{
-		const struct boot_info *bi = boot_info_get();
 
-		if (bi->mod_end && tar_probe(phys_to_virt(bi->mod_start), bi->mod_end - bi->mod_start)) {
-			mod_data = phys_to_virt(bi->mod_start);
-			mod_size = bi->mod_end - bi->mod_start;
-			kprintf("[initrd] boot module: %u KiB (ustar, searched after the ramdisk)\n",
-				(unsigned)(mod_size / 1024));
-		} else if (bi->mod_end) {
-			kprintf("[initrd] boot module ignored: not a ustar archive\n");
+	const struct boot_info *bi = boot_info_get();
+
+	for (unsigned i = 0; i < bi->nmods; i++) {
+		const u8 *d = phys_to_virt(bi->mods[i].start);
+		size_t n = bi->mods[i].end - bi->mods[i].start;
+
+		if (!tar_probe(d, n)) {
+			kprintf("[initrd] boot module %u is not a ustar archive: ignored\n", i);
+			continue;
 		}
+		mods[nmods].data = d;
+		mods[nmods].len = n;
+		for (off = 0, files = 0; tar_next(d, n, &off, &e) > 0;)
+			files += e.type == '0';
+		kprintf("[initrd] boot module %u: %u files, %u KiB, merged under /\n", i,
+			(unsigned)files, (unsigned)(n / 1024));
+		nmods++;
 	}
 }
 
@@ -60,8 +65,8 @@ int initrd_find(const char *path, const u8 **data, size_t *size)
 	struct tar_entry e;
 	int rc = tar_find(initrd_start, initrd_size(), strip(path), &e);
 
-	if (rc && mod_data)
-		rc = tar_find(mod_data, mod_size, strip(path), &e);
+	for (unsigned i = 0; rc && i < nmods; i++)
+		rc = tar_find(mods[i].data, mods[i].len, strip(path), &e);
 	if (rc)
 		return rc;
 	*data = e.data;
@@ -69,21 +74,29 @@ int initrd_find(const char *path, const u8 **data, size_t *size)
 	return 0;
 }
 
+/* Cursors below initrd_size() walk the ramdisk; module m's cursor is (m+1) * MOD_STRIDE + offset. */
+#define MOD_STRIDE (1ull << 40)
 int initrd_next(size_t *cursor, struct tar_entry *e)
 {
-	size_t off;
 	int rc;
 
-	if (!(*cursor & MOD_CURSOR)) {
+	if (*cursor < initrd_size()) {
 		rc = tar_next(initrd_start, initrd_size(), cursor, e);
-		if (rc > 0 || !mod_data)
+		if (rc > 0)
 			return rc;
-		*cursor = MOD_CURSOR;
+		*cursor = MOD_STRIDE;
 	}
-	off = *cursor & ~MOD_CURSOR;
-	rc = tar_next(mod_data, mod_size, &off, e);
-	*cursor = off | MOD_CURSOR;
-	return rc;
+	for (;;) {
+		size_t m = *cursor / MOD_STRIDE - 1, off = *cursor % MOD_STRIDE;
+
+		if (m >= nmods)
+			return 0;
+		rc = tar_next(mods[m].data, mods[m].len, &off, e);
+		*cursor = (m + 1) * MOD_STRIDE + off;
+		if (rc > 0)
+			return rc;
+		*cursor = (m + 2) * MOD_STRIDE;
+	}
 }
 
 bool initrd_is_dir(const char *path)

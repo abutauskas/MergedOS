@@ -140,6 +140,7 @@ long msys_open(struct task *t, u64 upath, u32 flags);
 long msys_close(struct task *t, int fd);
 long msys_lseek(struct task *t, int fd, s64 offset, int whence);
 long msys_fstat(struct task *t, int fd, u64 *size, bool *is_tty);
+extern u64 vfs_last_ino;                    /* fake st_ino of the last stat */
 long msys_stat(struct task *t, u64 upath, u64 *size, bool *is_dir);
 long msys_pipe(struct task *t, int fds[2], u32 flags);
 long msys_dup(struct task *t, int fd, int min, bool cloexec);
@@ -156,9 +157,22 @@ long msys_unlink(struct task *t, u64 upath, bool dir);
 long msys_rename(struct task *t, u64 ufrom, u64 uto);
 long msys_readdir(struct task *t, int fd, char *name, size_t cap, bool *is_dir, u64 *ino);
 
+/* pread: read at an explicit offset without disturbing the file position. */
+long msys_pread(struct task *t, int fd, u64 ubuf, u64 len, u64 offset);
+/* readlink: only "/proc/self/exe" is resolved (to the running program's path). */
+long msys_readlink(struct task *t, u64 upath, u64 ubuf, u64 bufsize);
+long msys_getrandom(struct task *t, u64 ubuf, u64 len);
+
 /* Memory and time. */
 long msys_brk(struct task *t, u64 addr);                /* returns the (new) break */
 long msys_mmap_anon(struct task *t, u64 len);           /* returns the address     */
+/* Full mmap: prot in VMM_* bits, flags in MSYS_MAP_*; fd/offset for file maps. */
+#define MSYS_MAP_SHARED         0x01
+#define MSYS_MAP_PRIVATE        0x02
+#define MSYS_MAP_FIXED          0x10
+#define MSYS_MAP_ANON           0x20
+#define MSYS_MAP_FIXED_NOREPLACE 0x100000
+long msys_mmap(struct task *t, u64 addr, u64 len, u32 prot, u32 flags, int fd, u64 offset);
 long msys_munmap(struct task *t, u64 addr, u64 len);
 long msys_set_fs_base(struct task *t, u64 base);
 long msys_get_fs_base(struct task *t, u64 uaddr);

@@ -25,12 +25,22 @@
 #define LX_IOV_MAX       16
 #define LX_SIGCHLD       17
 #define LX_AT_REMOVEDIR  0x200
+#define LXV_R 0x1               /* VMM_R */
+#define LXV_W 0x2               /* VMM_W */
+#define LXV_X 0x4               /* VMM_X */
 
 static long lx_ok(struct abi_ctx *ctx, const struct abi_call *c)
 {
 	(void)ctx;
 	(void)c;
 	return 0;                       /* accepted and ignored (signal masks, mprotect, munmap) */
+}
+
+static long lx_enosys(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	(void)ctx;
+	(void)c;
+	return -MERR_NOSYS;
 }
 
 static long lx_read(struct abi_ctx *ctx, const struct abi_call *c)
@@ -86,6 +96,7 @@ static long put_stat(struct abi_ctx *ctx, u64 ubuf, long kind, u64 size)
 	if (kind < 0)
 		return kind;
 	mode = modes[kind < (long)ARRAY_SIZE(modes) ? kind : 0];
+	memcpy(st + 8, &vfs_last_ino, 8);
 	memcpy(st + 16, &nlink, 8);
 	memcpy(st + 24, &mode, 4);
 	memcpy(st + 48, &size, 8);
@@ -142,12 +153,112 @@ static long lx_faccessat(struct abi_ctx *ctx, const struct abi_call *c)
 	return rc < 0 ? rc : 0;
 }
 
+/* mmap(addr, len, prot, flags, fd, offset). Linux prot/flags match MSYS_*. */
 static long lx_mmap(struct abi_ctx *ctx, const struct abi_call *c)
 {
-	/* Anonymous memory only, placed by the kernel. File mappings need the page cache. */
-	if (!(c->arg[3] & LX_MAP_ANONYMOUS) || (c->arg[3] & LX_MAP_FIXED))
-		return -MERR_NOMEM;
-	return msys_mmap_anon(ctx->task, c->arg[1]);
+	u32 prot = ((c->arg[2] & 1) ? LXV_R : 0) | ((c->arg[2] & 2) ? LXV_W : 0) |
+		   ((c->arg[2] & 4) ? LXV_X : 0);
+	u32 flags = (u32)c->arg[3] & (MSYS_MAP_FIXED | MSYS_MAP_ANON | MSYS_MAP_FIXED_NOREPLACE);
+
+	return msys_mmap(ctx->task, c->arg[0], c->arg[1], prot, flags, (int)c->arg[4], c->arg[5]);
+}
+
+static long lx_mprotect(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	u32 prot = ((c->arg[2] & 2) ? MSYS_PROT_W : 0) | ((c->arg[2] & 4) ? MSYS_PROT_X : 0);
+
+	return msys_protect(ctx->task, c->arg[0], c->arg[1], prot);
+}
+
+static long lx_pread(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	return msys_pread(ctx->task, (int)c->arg[0], c->arg[1], c->arg[2], c->arg[3]);
+}
+
+static long lx_readlink(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	return msys_readlink(ctx->task, c->arg[0], c->arg[1], c->arg[2]);
+}
+
+static long lx_readlinkat(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	long rc = at_check(ctx, c->arg[0], c->arg[1]);
+
+	return rc ? rc : msys_readlink(ctx->task, c->arg[1], c->arg[2], c->arg[3]);
+}
+
+static long lx_getrandom(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	return msys_getrandom(ctx->task, c->arg[0], c->arg[1]);
+}
+
+/* sched_getaffinity(pid, cpusetsize, mask): one CPU, so bit 0 of the mask. */
+static long lx_sched_getaffinity(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	u64 mask = 1;
+	u64 n = c->arg[1] < sizeof(mask) ? c->arg[1] : sizeof(mask);
+
+	if (n < 1)
+		return -MERR_INVAL;
+	if (uaccess_copy_out(ctx->task, c->arg[2], &mask, (size_t)n))
+		return -MERR_FAULT;
+	return (long)n;                         /* bytes written */
+}
+
+/* prlimit64(pid, resource, new, old): report generous, fixed limits. */
+static long lx_prlimit64(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	u64 lim[2];                             /* rlim_cur, rlim_max */
+
+	if (!c->arg[3])
+		return 0;                       /* only setting: accepted and ignored */
+	switch (c->arg[1]) {
+	case 3:  lim[0] = 8ULL << 20; lim[1] = 8ULL << 20; break;  /* RLIMIT_STACK */
+	case 7:  lim[0] = 32;         lim[1] = 32;         break;  /* RLIMIT_NOFILE */
+	default: lim[0] = ~0ULL;          lim[1] = ~0ULL;          break;  /* RLIM_INFINITY */
+	}
+	return uaccess_copy_out(ctx->task, c->arg[3], lim, sizeof(lim)) ? -MERR_FAULT : 0;
+}
+
+static long lx_getrlimit(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	struct abi_call p = *c;
+
+	p.arg[1] = c->arg[0];                   /* resource */
+	p.arg[3] = c->arg[1];                   /* old limit buffer */
+	return lx_prlimit64(ctx, &p);
+}
+
+/* statx: fill the subset glibc/musl read (mode, size, blocks). */
+static long lx_statx(struct abi_ctx *ctx, const struct abi_call *c)
+{
+	u64 size = 0;
+	bool dir = false;
+	long kind, rc = at_check(ctx, c->arg[0], c->arg[1]);
+	u8 stx[256] = { 0 };
+	static const u16 modes[] = {
+		[MSYS_ST_FILE] = 0100555, [MSYS_ST_DIR] = 040755, [MSYS_ST_TTY] = 020620,
+		[MSYS_ST_FIFO] = 010600, [MSYS_ST_FILE_RW] = 0100644,
+	};
+	u16 mode;
+	u32 mask = 0x7ff;                       /* STATX_BASIC_STATS */
+
+	if (rc)
+		return rc;
+	/* AT_EMPTY_PATH (0x1000) with an empty path means "the dirfd itself". */
+	kind = (c->arg[2] & 0x1000) ? msys_fstat(ctx->task, (int)c->arg[0], &size, &dir)
+				    : msys_stat(ctx->task, c->arg[1], &size, &dir);
+	if (kind < 0)
+		return kind;
+	mode = modes[kind < (long)ARRAY_SIZE(modes) ? kind : 0];
+	memcpy(stx + 0, &mask, 4);
+	memcpy(stx + 32, &vfs_last_ino, 8);     /* stx_ino */              /* stx_mask */
+	{ u32 bs = 4096; memcpy(stx + 4, &bs, 4); }     /* stx_blksize */
+	{ u32 nl = 1; memcpy(stx + 16, &nl, 4); }       /* stx_nlink */
+	memcpy(stx + 28, &mode, 2);             /* stx_mode */
+	memcpy(stx + 40, &size, 8);             /* stx_size */
+	{ u64 blk = (size + 511) / 512; memcpy(stx + 48, &blk, 8); }  /* stx_blocks */
+	return uaccess_copy_out(ctx->task, c->arg[4], stx, sizeof(stx));
 }
 
 static long lx_brk(struct abi_ctx *ctx, const struct abi_call *c)
@@ -518,8 +629,10 @@ static const struct abi_sysent linux_sysent[] = {
 	[6]   = { lx_stat,          "lstat" },
 	[8]   = { lx_lseek,         "lseek" },
 	[9]   = { lx_mmap,          "mmap" },
-	[10]  = { lx_ok,            "mprotect" },
+	[10]  = { lx_mprotect,      "mprotect" },
 	[11]  = { lx_munmap,        "munmap" },
+	[17]  = { lx_pread,         "pread64" },
+	[28]  = { lx_ok,            "madvise" },
 	[12]  = { lx_brk,           "brk" },
 	[13]  = { lx_rt_sigaction,  "rt_sigaction" },
 	[14]  = { lx_rt_sigprocmask, "rt_sigprocmask" },
@@ -548,6 +661,8 @@ static const struct abi_sysent linux_sysent[] = {
 	[83]  = { lx_mkdir,         "mkdir" },
 	[84]  = { lx_rmdir,         "rmdir" },
 	[87]  = { lx_unlink,        "unlink" },
+	[89]  = { lx_readlink,      "readlink" },
+	[97]  = { lx_getrlimit,     "getrlimit" },
 	[102] = { lx_ok,            "getuid" },
 	[104] = { lx_ok,            "getgid" },
 	[107] = { lx_ok,            "geteuid" },
@@ -560,6 +675,7 @@ static const struct abi_sysent linux_sysent[] = {
 	[186] = { lx_gettid,        "gettid" },
 	[200] = { lx_kill,          "tkill" },
 	[202] = { lx_futex,         "futex" },
+	[204] = { lx_sched_getaffinity, "sched_getaffinity" },
 	[217] = { lx_getdents64,    "getdents64" },
 	[218] = { lx_set_tid_address, "set_tid_address" },
 	[228] = { lx_clock_gettime, "clock_gettime" },
@@ -571,9 +687,15 @@ static const struct abi_sysent linux_sysent[] = {
 	[262] = { lx_newfstatat,    "newfstatat" },
 	[263] = { lx_unlinkat,      "unlinkat" },
 	[264] = { lx_renameat,      "renameat" },
+	[267] = { lx_readlinkat,    "readlinkat" },
 	[269] = { lx_faccessat,     "faccessat" },
+	[273] = { lx_ok,            "set_robust_list" },
 	[292] = { lx_dup3,          "dup3" },
 	[293] = { lx_pipe2,         "pipe2" },
+	[302] = { lx_prlimit64,     "prlimit64" },
+	[318] = { lx_getrandom,     "getrandom" },
+	[332] = { lx_statx,         "statx" },
+	[334] = { lx_enosys,        "rseq" },
 };
 
 static void linux_decode(const struct syscall_frame *f, struct abi_call *c)

@@ -62,6 +62,9 @@ void fd_fork(struct task *child, const struct task *parent);
 /* Load a whole executable: ramdisk data or a ramfs file's buffer. */
 int  vfs_image(const char *path, const u8 **data, size_t *size);
 
+/* Bytes of an open file for mmap (see kernel/vfs.c). */
+long vfs_mmap_source(struct task *t, int fd, u64 offset, const u8 **data, bool *immutable);
+
 /* Terminal input for the foreground process group. */
 void stdin_feed(int c);                         /* from task_keyboard_pump() */
 void stdin_drain_to_console(void);              /* unread input back to the shell */

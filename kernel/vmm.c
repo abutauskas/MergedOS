@@ -109,6 +109,23 @@ u64 vmm_map_user(u64 pml4_phys, u64 va, u32 prot)
 	return *pte & PTE_ADDR;
 }
 
+bool vmm_remap_user(u64 pml4_phys, u64 va, u32 prot)
+{
+	u64 *pte = walk(pml4_phys, ALIGN_DOWN(va, PAGE_SIZE), false);
+
+	if (!pte || !(*pte & PTE_P))
+		return false;
+	*pte &= PTE_ADDR;
+	*pte |= PTE_P | PTE_U;
+	if (prot & VMM_W)
+		*pte |= PTE_W;
+	if (cpu_nx_enabled() && !(prot & VMM_X))
+		*pte |= PTE_NX;
+	if ((read_cr3() & PTE_ADDR) == pml4_phys)
+		__asm__ volatile("invlpg (%0)" : : "r"(ALIGN_DOWN(va, PAGE_SIZE)) : "memory");
+	return true;
+}
+
 u64 vmm_user_to_phys(u64 pml4_phys, u64 va)
 {
 	u64 *pte;

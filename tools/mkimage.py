@@ -518,8 +518,8 @@ def build_tree(guest_dir, src_dir):
     }
 
 
-def cmd_initrd(args):
-    tree = build_tree(args.guest_dir, args.src_dir)
+def write_ustar(tree, out):
+    """Write {path: (data, mode)} to `out`, inserting parent directory entries."""
     members, seen = [], set()
     for path, (data, mode) in tree.items():
         parts = path.split("/")[:-1]
@@ -530,8 +530,58 @@ def cmd_initrd(args):
                 members.append((d, b"", 0o755))
         members.append((path, data, mode))
     blob = ustar(members)
-    with open(args.out, "wb") as f:
+    with open(out, "wb") as f:
         f.write(blob)
+    return blob
+
+
+def cmd_initrd(args):
+    tree = build_tree(args.guest_dir, args.src_dir)
+    blob = write_ustar(tree, args.out)
+    print(f"mkimage: {args.out}: {len(tree)} files, {len(blob)} bytes")
+
+
+# Host runtime files placed in the sysroot, as {sysroot path: host source}. Only
+# the ones present on the build host are included; symlinks are read through.
+SYSROOT_HOST_FILES = {
+    "lib64/ld-linux-x86-64.so.2":        "/lib64/ld-linux-x86-64.so.2",
+    "lib/x86_64-linux-gnu/libc.so.6":    "/lib/x86_64-linux-gnu/libc.so.6",
+    "lib/x86_64-linux-gnu/libresolv.so.2": "/lib/x86_64-linux-gnu/libresolv.so.2",
+    "lib/x86_64-linux-gnu/libm.so.6":    "/lib/x86_64-linux-gnu/libm.so.6",
+    "lib/ld-musl-x86_64.so.1":           "/lib/ld-musl-x86_64.so.1",
+    "bin/busybox":                       "/bin/busybox",
+}
+
+
+def is_dynamic_x86_64_elf(data):
+    """True for a 64-bit little-endian x86-64 ELF that is a PIE/exec with an interpreter."""
+    return (len(data) > 20 and data[:4] == b"\x7fELF" and data[4] == 2 and
+            data[5] == 1 and data[18] == 0x3e)
+
+
+def cmd_sysroot(args):
+    tree = {}
+    for dst, src in SYSROOT_HOST_FILES.items():
+        real = os.path.realpath(src)
+        if os.path.exists(real):
+            tree[dst] = (read(real), 0o755)
+    # The dynamic test programs and the helper library dlopen() loads.
+    guest = {
+        "bin/dyntest.gnu":        "dyntest.gnu",
+        "lib/libdyntest.so":      "libdyntest.so",
+        "bin/dyntest.musl":       "dyntest.musl",
+        "lib/libdyntest-musl.so": "libdyntest-musl.so",
+    }
+    for dst, name in guest.items():
+        p = os.path.join(args.guest_dir, name)
+        if os.path.exists(p) and os.path.getsize(p):
+            tree[dst] = (read(p), 0o755)
+    if not tree:
+        # Nothing to ship: still write a valid (empty) archive.
+        open(args.out, "wb").write(ustar([]))
+        print(f"mkimage: {args.out}: empty (no host runtimes found)")
+        return
+    blob = write_ustar(tree, args.out)
     print(f"mkimage: {args.out}: {len(tree)} files, {len(blob)} bytes")
 
 
@@ -676,7 +726,7 @@ def cmd_fixtures(args):
 def main():
     ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name, fn in (("initrd", cmd_initrd), ("fixtures", cmd_fixtures)):
+    for name, fn in (("initrd", cmd_initrd), ("fixtures", cmd_fixtures), ("sysroot", cmd_sysroot)):
         p = sub.add_parser(name)
         p.add_argument("--guest-dir", required=True)
         p.add_argument("--src-dir", required=True)

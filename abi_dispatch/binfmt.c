@@ -137,10 +137,9 @@ static int elf_plan(const u8 *p, size_t len, struct exec_plan *plan)
 		return -MERR_NOTSUP;
 	if (len < ELF64_EHDR_SIZE)
 		return -MERR_NOEXEC;
-	if (plan->info.flags & (BINFMT_F_DYNAMIC | BINFMT_F_PIE))
-		return -MERR_NOTSUP;            /* needs ld.so / relocation support */
-	if (rd16le(p + 16) != ET_EXEC)
+	if (rd16le(p + 16) != ET_EXEC && rd16le(p + 16) != ET_DYN)
 		return -MERR_NOEXEC;
+	plan->relative = rd16le(p + 16) == ET_DYN;
 
 	phoff = rd64le(p + 32);
 	phentsize = rd16le(p + 54);
@@ -153,6 +152,19 @@ static int elf_plan(const u8 *p, size_t len, struct exec_plan *plan)
 		struct exec_seg *s;
 		u32 pflags;
 
+		if (rd32le(ph) == PT_INTERP) {
+			u64 off = rd64le(ph + 8), sz = rd64le(ph + 32);
+
+			/* A path the kernel will open: NUL-terminated, sane length. */
+			if (sz < 2 || sz > 128 || !mos_in_range(len, off, sz) || p[off + sz - 1])
+				return -MERR_NOEXEC;
+			for (u64 k = 0; k + 1 < sz; k++)
+				if (!p[off + k])
+					return -MERR_NOEXEC;
+			plan->interp_off = off;
+			plan->interp_len = (u32)sz - 1;
+			continue;
+		}
 		if (rd32le(ph) != PT_LOAD)
 			continue;
 		if (plan->nsegs == EXEC_MAX_SEGS)

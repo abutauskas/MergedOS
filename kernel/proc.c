@@ -386,6 +386,7 @@ long msys_execve(struct task *t, u64 upath, u64 uargv, u64 uenvp)
 		rc = vfs_image(path, &img, &len);
 	if (rc < 0)
 		goto out;
+	mos_strlcpy(a->path, path, sizeof(a->path));
 
 	memcpy(save, t, sizeof(*t));
 	rc = task_load_image(t, img, len, a, &start);
