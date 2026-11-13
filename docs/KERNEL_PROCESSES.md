@@ -80,3 +80,22 @@ Short spec written before the code; the code follows it.
   frees pages.
 - The frame allocator manages RAM above 4 GiB; the direct map is extended
   at boot with 2 MiB pages up to the top of RAM (512 GiB cap).
+
+## Status and known limits
+
+Implemented as specified. `bin/proctest.linux` checks fork, exec (from the
+ramdisk and from ramfs), wait, pipes, dup2, vfork, a CLONE_THREAD thread
+joined through CLEARTID + futex, signal handlers and masks (with SSE state
+preserved), SIGPIPE, killing a spinning child, ramfs and a 256 MiB
+demand-backed mapping, all inside the boot self-test's leak check.
+`bin/hello.exe` checks NtCreateThreadEx and NtWaitForSingleObject.
+`bin/cat.linux` (the same binary as proctest) copies the terminal to
+stdout: Ctrl-D ends it, Ctrl-C kills it. Not done yet:
+
+- copy-on-write; `fork` copies every touched page
+- `FUTEX_REQUEUE`, robust futexes, `SA_RESTART` (interrupted calls return
+  EINTR), `sigaltstack`, real-time signal queueing, job control
+- NT threads share the process's TEB; no suspended creation
+- FreeBSD `open` and its flag translation, FreeBSD/XNU signals
+- frames above 4 GiB are handed out only once low memory runs out; drivers
+  that need 32-bit DMA addresses do not ask for low memory explicitly

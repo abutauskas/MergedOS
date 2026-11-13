@@ -121,7 +121,7 @@ KERNEL_S := \
 	kernel/initrd_blob.S \
 	kernel/ntrt_blob.S
 
-TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c
+TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c
 
 KOBJS := $(patsubst %,$(BUILD)/obj/%.o,$(basename $(KERNEL_S) $(KERNEL_C) $(SHARED_C) $(UI_C)))
 KDEPS := $(KOBJS:.o=.d)
@@ -216,7 +216,7 @@ $(BUILD)/guest/proctest.linux: src/guest/proctest.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=gnu11 -Os -static -nostdlib -ffreestanding -fno-pic -no-pie \
 		-fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables \
-		-fno-builtin -Wl,--build-id=none -Wl,-z,noexecstack -o $@ $<
+		-fno-builtin -s -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $<
 GUEST_BINS += $(BUILD)/guest/proctest.linux
 
 $(eval $(call GUEST_RULE,hello.linux,hello_linux.S))

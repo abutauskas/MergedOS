@@ -225,6 +225,12 @@ int cmain(long *sp)
 
 	if (argc > 1 && seq(argv[1], "child"))
 		return child_main(argc, argv, envp);
+	if (slen(argv[0]) >= 9 && seq(argv[0] + slen(argv[0]) - 9, "cat.linux")) {
+		/* Installed a second time as bin/cat.linux: copy stdin to stdout. */
+		while ((n = xread(0, buf, sizeof(buf))) > 0)
+			xwrite(1, buf, (u64)n);
+		return n < 0 ? 1 : 0;
+	}
 
 	/* 1-3: identity */
 	pid = xgetpid();

@@ -13,21 +13,28 @@ self-test, GRUB ISO.
 
 Known limits carried forward:
 
-- One task at a time; a task that loops forever hangs the machine.
 - No interrupts: devices are polled.
-- RAM above 4 GiB is not managed.
 - Static executables only.
 - BIOS boot only; QEMU is the only tested platform.
 - Desktop choice is not persisted.
 
 ## M2 - A real kernel core
 
-- IDT for device interrupts, APIC and timer, preemptive round-robin scheduler
+Done (see [KERNEL_PROCESSES.md](KERNEL_PROCESSES.md)): preemptive
+round-robin scheduling of several user processes and threads, per-process
+descriptor tables, `fork`/`vfork`/`clone`/`execve`/`wait4`, threads with
+futexes and TLS, NT threads, signals with handlers and default actions,
+pipes, keyboard stdin and Ctrl-C, a small page-backed kernel allocator,
+demand-backed anonymous memory (1 GiB per process), direct map and frame
+allocator for all RAM. Also from M3: a writable ramfs at `/tmp` and
+`/home/user`.
+
+Still open:
+
+- APIC timer, interrupt-driven devices
 - Per-CPU data via `%gs`/`swapgs`, SMP bring-up
-- Kernel heap (slab), direct map for all RAM
-- `fork`/`clone`, `wait`, threads
-- Signals (and with them `SIGSYS` for unknown BSD/XNU calls)
-- Demand paging and copy-on-write
+- Copy-on-write fork (fork copies the touched pages today)
+- Job control (SIGSTOP/SIGCONT), sessions, `SIGSYS` for unknown BSD/XNU calls
 
 ## M3 - Files and a user-space shell
 
