@@ -29,6 +29,7 @@
 #include <mergedos/sched.h>
 #include <mergedos/setup.h>
 #include <mergedos/task.h>
+#include <mergedos/vfs.h>
 #include "de_selector/de_selector.h"
 
 void kmain(u32 mb_magic, u32 mb_info);
@@ -199,6 +200,24 @@ static int abi_boot_check(void)
 			failures += !ok;
 		}
 	}
+	/* Several processes at once: fork, exec, wait, pipes, threads, signals, ramfs. */
+	{
+		struct exec_report rep = { 0 };
+		const u8 *img;
+		size_t len;
+		int rc = initrd_find("bin/proctest.linux", &img, &len);
+		bool ok;
+
+		if (!rc)
+			rc = task_exec("bin/proctest.linux", img, len, &rep);
+		ok = !rc && rep.exit_code == 0 && !rep.faulted &&
+		     mos_memstr(rep.out, rep.out_len, "proctest: OK");
+		kprintf("[proc] %-18s %-9s -> %-7s %llu syscalls, %u pages, exit %d  %s\n",
+			"bin/proctest.linux", binfmt_format_name(rep.format),
+			abi_personality_name(rep.personality), (unsigned long long)rep.syscalls,
+			rep.pages, rc ? rc : rep.exit_code, ok ? "OK" : "FAILED");
+		failures += !ok;
+	}
 	pmm_get_stats(&after);
 	if (after.free_frames != before.free_frames) {
 		kprintf("[abi] FAILED: %lld frames leaked by exec/exit\n",
@@ -246,6 +265,7 @@ void kmain(u32 mb_magic, u32 mb_info)
 	sched_init();
 	irq_enable();                   /* timer ticks and preemption from here on */
 	initrd_init();
+	vfs_init();
 
 	hwprobe_run(&hw);
 	graphics_init();

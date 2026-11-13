@@ -1,7 +1,8 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * CPU exception handling. A fault in ring 3 terminates the offending task
- * and returns control to the kernel; a fault in ring 0 is a kernel bug.
+ * CPU exception handling. A page fault in ring 3 on reserved memory is
+ * demand paging; any other ring-3 fault terminates the offending process.
+ * A fault in ring 0 is a kernel bug.
  */
 #include <mergedos/kernel.h>
 #include <mergedos/cpu.h>
@@ -40,6 +41,8 @@ static void irq_dispatch(struct trap_frame *tf)
 	if ((tf->cs & 3) == 3)
 		task_user_tick();               /* may end a runaway task instead of returning */
 	sched_tick();                           /* may switch to another thread */
+	if ((tf->cs & 3) == 3)
+		task_signal_deliver(tf);        /* e.g. SIGINT for a program that never calls in */
 }
 
 void trap_handler(struct trap_frame *tf)
@@ -52,8 +55,11 @@ void trap_handler(struct trap_frame *tf)
 	}
 	cr2 = read_cr2();
 
-	if ((tf->cs & 3) == 3)
-		task_user_fault(tf, cr2);       /* does not return */
+	if ((tf->cs & 3) == 3) {
+		task_user_fault(tf, cr2);       /* returns only if the page was backed */
+		task_signal_deliver(tf);
+		return;
+	}
 
 	panic("kernel trap %s (vector %u, error 0x%llx)\n"
 	      "  rip=%016llx rsp=%016llx cr2=%016llx\n"

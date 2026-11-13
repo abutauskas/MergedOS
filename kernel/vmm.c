@@ -163,3 +163,72 @@ void vmm_as_destroy(u64 pml4_phys)
 			free_table(pml4[i] & PTE_ADDR, 2);
 	pmm_free(pml4_phys);
 }
+
+/* Remove one user page and free its frame. Returns false if nothing was mapped. */
+bool vmm_unmap_user(u64 pml4_phys, u64 va)
+{
+	u64 *pte = walk(pml4_phys, ALIGN_DOWN(va, PAGE_SIZE), false);
+
+	if (!pte || !(*pte & PTE_P))
+		return false;
+	pmm_free(*pte & PTE_ADDR);
+	*pte = 0;
+	if ((read_cr3() & PTE_ADDR) == pml4_phys)
+		__asm__ volatile("invlpg (%0)" : : "r"(ALIGN_DOWN(va, PAGE_SIZE)) : "memory");
+	return true;
+}
+
+/* Copy a table and everything below it; leaf frames are duplicated, not shared. */
+static u64 clone_table(u64 src_phys, int level)
+{
+	const u64 *src = phys_to_virt(src_phys);
+	u64 dst_phys = pmm_alloc(), *dst;
+
+	if (!dst_phys)
+		return 0;
+	dst = phys_to_virt(dst_phys);
+	for (int i = 0; i < 512; i++) {
+		u64 e = src[i], copy;
+
+		if (!(e & PTE_P))
+			continue;
+		if (level > 0) {
+			copy = clone_table(e & PTE_ADDR, level - 1);
+		} else {
+			copy = pmm_alloc();
+			if (copy)
+				memcpy(phys_to_virt(copy), phys_to_virt(e & PTE_ADDR), PAGE_SIZE);
+		}
+		if (!copy) {
+			free_table(dst_phys, level);
+			return 0;
+		}
+		dst[i] = copy | (e & ~PTE_ADDR);
+	}
+	return dst_phys;
+}
+
+/* fork(): a new address space with a private copy of every user page. */
+u64 vmm_as_clone(u64 src_pml4)
+{
+	u64 dst = vmm_as_create();
+	const u64 *s = phys_to_virt(src_pml4);
+	u64 *d;
+
+	if (!dst)
+		return 0;
+	d = phys_to_virt(dst);
+	for (int i = 0; i < 256; i++) {
+		u64 copy;
+
+		if (!(s[i] & PTE_P))
+			continue;
+		copy = clone_table(s[i] & PTE_ADDR, 2);
+		if (!copy) {
+			vmm_as_destroy(dst);
+			return 0;
+		}
+		d[i] = copy | (s[i] & ~PTE_ADDR);
+	}
+	return dst;
+}

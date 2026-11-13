@@ -62,5 +62,7 @@ void vmm_as_destroy(u64 pml4_phys);
 u64  vmm_map_user(u64 pml4_phys, u64 va, u32 prot);
 u64  vmm_user_to_phys(u64 pml4_phys, u64 va);   /* 0 if not mapped for user */
 bool vmm_user_ok(u64 pml4_phys, u64 va, u64 len, bool write);
+bool vmm_unmap_user(u64 pml4_phys, u64 va);     /* frees the frame */
+u64  vmm_as_clone(u64 pml4_phys);               /* deep copy of the user half, 0 on OOM */
 
 #endif /* MERGEDOS_MM_H */

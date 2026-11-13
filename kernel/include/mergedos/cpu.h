@@ -27,8 +27,7 @@ struct user_start {
 void cpu_init(void);
 bool cpu_nx_enabled(void);
 
-long user_enter(const struct user_start *s);
-void user_exit_resume(long status) MOS_NORETURN;
+void cpu_set_rsp0(u64 top);             /* TSS: kernel stack for ring-3 interrupts */
 
 void trap_handler(struct trap_frame *tf);
 

@@ -26,6 +26,16 @@ enum merr {
 	MERR_AGAIN,     /* try again                          */
 	MERR_RANGE,     /* value or buffer too large          */
 	MERR_NOTTY,     /* not a terminal                     */
+	MERR_NOTDIR,    /* not a directory                    */
+	MERR_ISDIR,     /* is a directory                     */
+	MERR_EXIST,     /* already exists                     */
+	MERR_NOTEMPTY,  /* directory not empty                */
+	MERR_CHILD,     /* no child process to wait for       */
+	MERR_INTR,      /* interrupted by a signal            */
+	MERR_PIPE,      /* write to a pipe nobody reads       */
+	MERR_SRCH,      /* no such process                    */
+	MERR_TIMEDOUT,  /* wait timed out                     */
+	MERR_MFILE,     /* descriptor table full              */
 	MERR_MAX
 };
 

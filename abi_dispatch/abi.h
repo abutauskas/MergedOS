@@ -126,21 +126,80 @@ void msys_exit(struct task *t, int status);
 int  uaccess_copy_in(struct task *t, void *dst, u64 uaddr, size_t len);
 int  uaccess_copy_out(struct task *t, u64 uaddr, const void *src, size_t len);
 
-/* Files (read-only ramdisk for now), memory and time. Paths are user pointers. */
+/*
+ * Files. Paths are user pointers; open flags use the Linux values (VFS_O_*
+ * in kernel/include/mergedos/vfs.h). fstat/stat return the kind of object.
+ */
+#define MSYS_ST_FILE    0               /* read-only file (ramdisk) */
+#define MSYS_ST_DIR     1
+#define MSYS_ST_TTY     2
+#define MSYS_ST_FIFO    3
+#define MSYS_ST_FILE_RW 4               /* writable file (ramfs)    */
 long msys_read(struct task *t, int fd, u64 ubuf, u64 len);
-long msys_open(struct task *t, u64 upath, bool for_writing);
+long msys_open(struct task *t, u64 upath, u32 flags);
 long msys_close(struct task *t, int fd);
 long msys_lseek(struct task *t, int fd, s64 offset, int whence);
 long msys_fstat(struct task *t, int fd, u64 *size, bool *is_tty);
 long msys_stat(struct task *t, u64 upath, u64 *size, bool *is_dir);
+long msys_pipe(struct task *t, int fds[2], u32 flags);
+long msys_dup(struct task *t, int fd, int min, bool cloexec);
+long msys_dup2(struct task *t, int oldfd, int newfd, bool cloexec);
+#define MSYS_F_DUPFD 0
+#define MSYS_F_GETFD 1
+#define MSYS_F_SETFD 2
+#define MSYS_F_GETFL 3
+#define MSYS_F_SETFL 4
+#define MSYS_F_DUPFD_CLOEXEC 1030
+long msys_fcntl(struct task *t, int fd, int cmd, u64 arg);
+long msys_mkdir(struct task *t, u64 upath);
+long msys_unlink(struct task *t, u64 upath, bool dir);
+long msys_rename(struct task *t, u64 ufrom, u64 uto);
+long msys_readdir(struct task *t, int fd, char *name, size_t cap, bool *is_dir, u64 *ino);
+
+/* Memory and time. */
 long msys_brk(struct task *t, u64 addr);                /* returns the (new) break */
 long msys_mmap_anon(struct task *t, u64 len);           /* returns the address     */
+long msys_munmap(struct task *t, u64 addr, u64 len);
 long msys_set_fs_base(struct task *t, u64 base);
+long msys_get_fs_base(struct task *t, u64 uaddr);
 u64  msys_clock_ns(void);
+long msys_nanosleep(struct task *t, u64 ns);
 /* Add rights (MSYS_PROT_*) to pages that are already mapped; never removes any. */
 #define MSYS_PROT_W 0x2
 #define MSYS_PROT_X 0x4
 long msys_protect(struct task *t, u64 addr, u64 len, u32 prot);
+
+/*
+ * Processes and threads. clone flags use the Linux values (MSYS_CLONE_*);
+ * wait statuses use the traditional UNIX encoding shared by Linux and BSD.
+ */
+#define MSYS_CLONE_VM             0x00000100
+#define MSYS_CLONE_VFORK          0x00004000
+#define MSYS_CLONE_THREAD         0x00010000
+#define MSYS_CLONE_SETTLS         0x00080000
+#define MSYS_CLONE_PARENT_SETTID  0x00100000
+#define MSYS_CLONE_CHILD_CLEARTID 0x00200000
+#define MSYS_CLONE_CHILD_SETTID   0x01000000
+#define MSYS_WNOHANG              1
+long msys_clone(struct task *t, u64 flags, u64 newsp, u64 ptid, u64 ctid, u64 tls);
+long msys_execve(struct task *t, u64 upath, u64 uargv, u64 uenvp);
+long msys_wait(struct task *t, int pid, u64 ustatus, int options);
+long msys_getppid(struct task *t);
+long msys_gettid(struct task *t);
+long msys_setpgid(struct task *t, int pid, int pgid);
+long msys_getpgid(struct task *t, int pid);
+long msys_thread_exit(struct task *t, int status);      /* only the calling thread */
+long msys_set_tid_address(struct task *t, u64 uaddr);
+long msys_futex(struct task *t, u64 uaddr, int op, u32 val, u64 utimeout);
+/* NT threads: start `entry(arg)` on a fresh stack; returns the thread id. */
+long msys_thread_spawn(struct task *t, u64 entry, u64 arg, u64 stack_size, u64 exit_thunk);
+long msys_thread_join(struct task *t, int tid, u64 timeout_ns);   /* 0 or -MERR_TIMEDOUT */
+
+/* Signals: Linux numbers and struct layouts (struct sigaction, rt_sigframe). */
+long msys_kill(struct task *t, int pid, int sig);
+long msys_sigaction(struct task *t, int sig, u64 uact, u64 uold);
+long msys_sigprocmask(struct task *t, int how, u64 uset, u64 uold);
+long msys_sigreturn(struct task *t);
 
 /* identity.c: the operating system each personality reports to its programs. */
 struct abi_identity {
