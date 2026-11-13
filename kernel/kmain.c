@@ -181,6 +181,9 @@ static int abi_boot_check(void)
 		bool warm = false;
 
 		static const char *const cmd_args[] = { "/c", "echo", "cmd-says-hi", NULL };
+		static const char *const reg_add[] = { "add", "HKCU\\Software\\MergedOS", "/v", "Greeting",
+						       "/t", "REG_SZ", "/d", "reg-says-hi", "/f", NULL };
+		static const char *const reg_query[] = { "query", "HKCU\\Software\\MergedOS", NULL };
 		static const struct {
 			const char *path, *expect, *missing_note;
 			const char *const *argv;
@@ -190,6 +193,8 @@ static int abi_boot_check(void)
 			{ "bin/wine/whoami.exe", "MERGEDOS\\user", NULL },
 			{ "windows/system32/cmd.exe", "cmd-says-hi", NULL,
 			  cmd_args },
+			{ "windows/system32/reg.exe", "completed successfully", NULL, reg_add },
+			{ "windows/system32/reg.exe", "reg-says-hi", NULL, reg_query },
 		};
 
 		for (unsigned i = 0; i < ARRAY_SIZE(nt_progs); i++) {
