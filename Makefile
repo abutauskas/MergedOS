@@ -124,7 +124,8 @@ KERNEL_S := \
 	kernel/arch/x86_64/entry.S \
 	kernel/initrd_blob.S
 
-TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c tests/test_darwin.c
+TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c tests/test_darwin.c \
+	tests/test_wayland.c src/wayland/wl_wire.c src/wayland/wl_comp.c src/wayland/wl_keymap.c
 
 KOBJS := $(patsubst %,$(BUILD)/obj/%.o,$(basename $(KERNEL_S) $(KERNEL_C) $(SHARED_C) $(UI_C)))
 KDEPS := $(KOBJS:.o=.d)

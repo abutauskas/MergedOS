@@ -170,6 +170,7 @@ int main(void)
 		{ "mergedfence + .merged (format, rules, matching)", test_fence },
 		{ "file types + viewers (identify, PNG/BMP, zip/tar, fuzz)", test_filetype },
 		{ "ramfs + process system calls (Linux / FreeBSD routing)", test_ramfs },
+		{ "wayland (wire codec, compositor, socketpair client, fuzz)", test_wayland },
 		{ "Darwin: XNU calls, Mach-O dynamic plans, imports, .app report", test_darwin },
 	};
 
