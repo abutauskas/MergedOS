@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: BSD-2-Clause
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install toolchain and emulator
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential python3 qemu-system-x86 grub-pc-bin grub-common xorriso mtools
+
+      - name: Build kernel
+        run: make -j"$(nproc)"
+
+      - name: Host unit tests (ASan + UBSan)
+        run: make test-host
+
+      - name: Boot self-test in QEMU (24, 64 and 256 MiB)
+        run: tools/boot-test.sh build/mergedos.elf32 24 64 256
+
+      - name: Build host tools and ISO
+        run: make tools iso
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mergedos
+          path: |
+            build/mergedos.elf
+            build/mergedos.iso

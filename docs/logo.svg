@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: BSD-2-Clause -->
+<!-- MergedOS mark: red-to-blue hexagon holding four squares of four sizes.
+     Same geometry as ui_logo() in ui/aa.c (quarter units of a 16-unit box). -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="256" height="256">
+  <title>MergedOS</title>
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#E5484D"/>
+      <stop offset="1" stop-color="#2F6FED"/>
+    </linearGradient>
+  </defs>
+  <polygon points="32,2 58,17 58,47 32,62 6,47 6,17" fill="url(#g)"/>
+  <rect x="15" y="15" width="16" height="16" fill="#F4F6FA"/>
+  <rect x="33" y="19" width="12" height="12" fill="#F4F6FA"/>
+  <rect x="33" y="33" width="9" height="9" fill="#F4F6FA"/>
+  <rect x="25" y="33" width="6" height="6" fill="#F4F6FA"/>
+</svg>
