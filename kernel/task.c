@@ -385,6 +385,13 @@ void trap_frame_from_start(struct trap_frame *tf, const struct user_start *s)
  */
 int task_exec(const char *name, const void *image, size_t len, struct exec_report *rep)
 {
+	return task_exec_args(name, image, len, NULL, rep);
+}
+
+/* As task_exec(), with further arguments (a NULL-terminated list) after argv[0]. */
+int task_exec_args(const char *name, const void *image, size_t len, const char *const *argv,
+		   struct exec_report *rep)
+{
 	struct exec_args *args = kzalloc(sizeof(*args));
 	struct user_start start;
 	struct trap_frame tf;
@@ -400,6 +407,15 @@ int task_exec(const char *name, const void *image, size_t len, struct exec_repor
 		return -MERR_NOMEM;
 	}
 	exec_args_init(args, name);
+	for (; argv && *argv && args->argc < EXEC_ARGS_MAX; argv++) {
+		size_t n = strlen(*argv) + 1;
+
+		if (args->len + n > EXEC_ARGS_BUF)
+			break;
+		memcpy(args->buf + args->len, *argv, n);
+		args->len += (u32)n;
+		args->argc++;
+	}
 	rc = task_load_image(t, image, len, args, &start);
 	kfree(args);
 	rep->format = t->format;

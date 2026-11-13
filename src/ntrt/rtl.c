@@ -2761,3 +2761,198 @@ static API int w__wtoi(const wchar *s)
 }
 EXPORT(_wtoi);
 EXPORT_AS("_wtol", w__wtoi);
+
+/* ---- message formatting (FormatMessage's engine) ----------------------------------- */
+
+struct fmt_out {
+	wchar *buf;
+	size_t cap, len;
+};
+
+static void fm_put(struct fmt_out *o, wchar c)
+{
+	if (o->len < o->cap)
+		o->buf[o->len] = c;
+	o->len++;
+}
+
+static void fm_ascii(struct fmt_out *o, const char *s)
+{
+	for (; *s; s++)
+		fm_put(o, (wchar)(u8)*s);
+}
+
+/* Widen an ANSI argument string (Latin-1 is enough for the callers here). */
+static wchar *fm_widen(const char *s)
+{
+	size_t n = rt_strlen(s);
+	wchar *w = nt_alloc((n + 1) * 2);
+
+	if (w)
+		nt_utow(w, n + 1, s, n + 1);
+	return w;
+}
+
+static NTSTATUS format_message(const wchar *msg, u32 width, bool ignore_inserts, bool ansi_args,
+			       const u64 *args, wchar *out, u32 out_bytes, u32 *ret_bytes)
+{
+	struct fmt_out o = { out, out_bytes / 2, 0 };
+	size_t i = 0;
+
+	if (!msg)
+		return STATUS_INVALID_PARAMETER;
+	while (msg[i]) {
+		wchar c = msg[i++];
+
+		if (c == '\r' || c == '\n') {
+			wchar nx = msg[i];
+
+			if ((nx == '\r' || nx == '\n') && nx != c)
+				i++;
+			if (width) {
+				fm_put(&o, ' ');
+			} else {
+				fm_put(&o, '\r');
+				fm_put(&o, '\n');
+			}
+			continue;
+		}
+		if (c != '%') {
+			fm_put(&o, c);
+			continue;
+		}
+		c = msg[i];
+		if (!c)
+			break;
+		if (c >= '1' && c <= '9') {
+			u32 n = 0;
+			wchar spec[32];
+			size_t sl = 0;
+			u64 ta[4];
+			u64 val;
+			struct rt_sink s = { 0 };
+			wchar tmp[512];
+			bool star = false;
+
+			if (ignore_inserts) {
+				fm_put(&o, '%');
+				continue;
+			}
+			while (msg[i] >= '0' && msg[i] <= '9')
+				n = n * 10 + (u32)(msg[i++] - '0');
+			val = args ? args[n - 1] : 0;
+			spec[sl++] = '%';
+			if (msg[i] == '!') {
+				i++;
+				while (msg[i] && msg[i] != '!' && sl < 28) {
+					if (msg[i] == '*')
+						star = true;
+					spec[sl++] = msg[i++];
+				}
+				if (msg[i] == '!')
+					i++;
+			} else {
+				spec[sl++] = 's';
+			}
+			spec[sl] = 0;
+			(void)star;
+			/* ANSI arguments: %s means a narrow string then. */
+			if (ansi_args && spec[sl - 1] == 's' && spec[sl - 2] != 'l' && spec[sl - 2] != 'w') {
+				wchar *w = fm_widen((const char *)val);
+
+				ta[0] = (u64)w;
+				s.wbuf = tmp;
+				s.cap = 511;
+				rt_format(&s, spec, true, ta);
+				nt_free(w);
+			} else {
+				ta[0] = val;
+				ta[1] = args ? args[n] : 0;     /* for "*" widths */
+				ta[2] = args ? args[n + 1] : 0;
+				s.wbuf = tmp;
+				s.cap = 511;
+				rt_format(&s, spec, true, ta);
+			}
+			for (size_t k = 0; k < s.len && k < 511; k++)
+				fm_put(&o, tmp[k]);
+			continue;
+		}
+		i++;
+		switch (c) {
+		case '0':
+			goto done;
+		case 'n': fm_put(&o, '\r'); fm_put(&o, '\n'); break;
+		case 'r': fm_put(&o, '\r'); break;
+		case 't': fm_put(&o, '\t'); break;
+		case 'b': fm_put(&o, ' '); break;
+		case '.': fm_put(&o, '.'); break;
+		case '!': fm_put(&o, '!'); break;
+		case '%': fm_put(&o, '%'); break;
+		default:
+			fm_put(&o, '%');
+			fm_put(&o, c);
+			break;
+		}
+	}
+done:
+	fm_ascii(&o, "");
+	fm_put(&o, 0);
+	if (ret_bytes)
+		*ret_bytes = (u32)(o.len * 2);
+	return o.len > o.cap ? STATUS_BUFFER_OVERFLOW : STATUS_SUCCESS;
+}
+
+static API NTSTATUS w_RtlFormatMessage(const wchar *msg, u32 width, u8 ignore, u8 ansi, u8 is_array,
+				       u64 *args, wchar *out, u32 bytes, u32 *ret)
+{
+	const u64 *a = args;
+
+	if (!is_array && args)
+		a = *(const u64 **)args;        /* va_list *: the list is an array of 8-byte slots */
+	return format_message(msg, width, ignore, ansi, a, out, bytes, ret);
+}
+EXPORT(RtlFormatMessage);
+
+static API NTSTATUS w_RtlFormatMessageEx(const wchar *msg, u32 width, u8 ignore, u8 ansi,
+					 u8 is_array, u64 *args, wchar *out, u32 bytes, u32 *ret,
+					 u32 flags)
+{
+	(void)flags;
+	return w_RtlFormatMessage(msg, width, ignore, ansi, is_array, args, out, bytes, ret);
+}
+EXPORT(RtlFormatMessageEx);
+
+/* Message table lookup (RT_MESSAGETABLE blocks of id ranges). */
+static API NTSTATUS w_RtlFindMessage(u64 base, u32 type, u32 lang, u32 id, const u16 **entry)
+{
+	u64 info[3] = { type, 1, lang };
+	u8 *ent;
+	const u32 *tab;
+	NTSTATUS st = ldr_find_resource(base, info, 3, &ent);
+
+	if (st) {
+		info[2] = 0x409;
+		st = ldr_find_resource(base, info, 3, &ent);
+	}
+	if (st) {
+		info[2] = 0;
+		st = ldr_find_resource(base, info, 3, &ent);
+	}
+	if (st)
+		return STATUS_MESSAGE_NOT_FOUND;
+	tab = (const u32 *)(base + ((u32 *)ent)[0]);
+	for (u32 b = 0; b < tab[0]; b++) {
+		const u32 *blk = tab + 1 + 3 * b;       /* low, high, offset */
+
+		if (id >= blk[0] && id <= blk[1]) {
+			const u8 *p = (const u8 *)tab + blk[2];
+
+			for (u32 k = blk[0]; k < id; k++)
+				p += *(const u16 *)p;
+			*entry = (const u16 *)p;
+			return STATUS_SUCCESS;
+		}
+	}
+	return STATUS_MESSAGE_NOT_FOUND;
+}
+EXPORT(RtlFindMessage);

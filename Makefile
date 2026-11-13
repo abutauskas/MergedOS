@@ -172,7 +172,7 @@ $(BUILD)/obj/kernel/ntrt_blob.o: $(NTRT_BIN)
 # User-mode code (Microsoft x64 calling convention) linked at a fixed address
 # and embedded in the kernel as a flat binary; see src/ntrt/ntrt_abi.h.
 
-NTRT_SRC  := src/ntrt/start.S src/ntrt/kernel32.c src/ntrt/crt.c src/ntrt/ldr.c src/ntrt/ntdll.c src/ntrt/rtl.c src/ntrt/ntsync.c src/ntrt/ntreg.c src/ntrt/ntexc.c
+NTRT_SRC  := src/ntrt/start.S src/ntrt/kernel32.c src/ntrt/crt.c src/ntrt/ldr.c src/ntrt/ntdll.c src/ntrt/rtl.c src/ntrt/ntsync.c src/ntrt/ntreg.c src/ntrt/ntexc.c src/ntrt/user.c
 NTRT_OBJS := $(patsubst src/ntrt/%,$(BUILD)/ntrt/%.o,$(basename $(NTRT_SRC)))
 NTRT_CFLAGS := -std=gnu11 -Os $(WARNINGS) -ffreestanding -fno-builtin -fshort-wchar \
 	-fno-stack-protector -fno-pic -fno-pie -fcf-protection=none -mcmodel=small \

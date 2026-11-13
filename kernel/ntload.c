@@ -120,8 +120,13 @@ static void nt_cmdline(char *out, size_t cap, const struct exec_args *args)
 			out[n++] = ' ';
 		if (q)
 			out[n++] = '"';
+		if (!i && *s != '/' && !strchr(s, ':')) {       /* the program: a DOS path on C: */
+			out[n++] = 'C';
+			out[n++] = ':';
+			out[n++] = '\\';
+		}
 		for (; *s && n + 2 < cap; s++)
-			out[n++] = *s;
+			out[n++] = (!i && *s == '/') ? '\\' : *s;
 		if (q)
 			out[n++] = '"';
 		s += strlen(s) + 1;

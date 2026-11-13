@@ -280,7 +280,7 @@ static void parent_of(const char *path, char *out, size_t cap)
 	out[n > 1 ? n - 1 : 1] = 0;
 }
 
-static API NTSTATUS w_NtCreateFile(u64 *handle, u32 access, OBJECT_ATTRIBUTES *oa,
+static API NTSTATUS create_file_impl(u64 *handle, u32 access, OBJECT_ATTRIBUTES *oa,
 				   IO_STATUS_BLOCK *iosb, s64 *alloc, u32 attrs, u32 share,
 				   u32 disp, u32 options, void *ea, u32 ealen)
 {
@@ -408,6 +408,49 @@ static API NTSTATUS w_NtCreateFile(u64 *handle, u32 access, OBJECT_ATTRIBUTES *o
 		iosb->info = info;
 	}
 	return 0;
+}
+
+static bool nt_trace;
+
+void nt_set_trace(bool on)
+{
+	nt_trace = on;
+}
+
+/* One line on stderr per traced call: what, name, status. */
+void nt_trace_line(const char *what, const UNICODE_STRING *name, NTSTATUS st)
+{
+	char buf[200], n8[120];
+	size_t n = 0;
+	static const char hex[] = "0123456789abcdef";
+
+	if (!nt_trace)
+		return;
+	for (; *what && n < 40; what++)
+		buf[n++] = *what;
+	buf[n++] = ' ';
+	if (name && name->buf) {
+		size_t k = nt_wtou(n8, sizeof(n8) - 1, name->buf, name->len / 2);
+
+		for (size_t i = 0; i < k && i < sizeof(n8) - 1 && n < 150; i++)
+			buf[n++] = n8[i];
+	}
+	buf[n++] = ' ';
+	for (int i = 28; i >= 0; i -= 4)
+		buf[n++] = hex[(st >> i) & 15];
+	buf[n++] = '\n';
+	rt_write(2, buf, n);
+}
+
+static API NTSTATUS w_NtCreateFile(u64 *handle, u32 access, OBJECT_ATTRIBUTES *oa,
+				   IO_STATUS_BLOCK *iosb, s64 *alloc, u32 attrs, u32 share,
+				   u32 disp, u32 options, void *ea, u32 ealen)
+{
+	NTSTATUS s = create_file_impl(handle, access, oa, iosb, alloc, attrs, share, disp, options,
+				      ea, ealen);
+
+	nt_trace_line("NtCreateFile", oa ? oa->name : NULL, s);
+	return s;
 }
 EXPORT(NtCreateFile);
 

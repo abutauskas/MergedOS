@@ -180,12 +180,16 @@ static int abi_boot_check(void)
 	{
 		bool warm = false;
 
+		static const char *const cmd_args[] = { "/c", "echo", "cmd-says-hi", NULL };
 		static const struct {
 			const char *path, *expect, *missing_note;
+			const char *const *argv;
 		} nt_progs[] = {
 			{ "bin/win_hello.exe", "RtlGetVersion 10.0.22631", "built without MinGW-w64" },
 			{ "bin/wine/hostname.exe", "MERGEDOS", NULL },
 			{ "bin/wine/whoami.exe", "MERGEDOS\\user", NULL },
+			{ "windows/system32/cmd.exe", "cmd-says-hi", NULL,
+			  cmd_args },
 		};
 
 		for (unsigned i = 0; i < ARRAY_SIZE(nt_progs); i++) {
@@ -201,7 +205,7 @@ static int abi_boot_check(void)
 						nt_progs[i].missing_note);
 				continue;
 			}
-			rc = task_exec(nt_progs[i].path, img, len, &rep);
+			rc = task_exec_args(nt_progs[i].path, img, len, nt_progs[i].argv, &rep);
 			ok = !rc && rep.exit_code == 0 && !rep.faulted && rep.personality == ABI_NT &&
 			     mos_memstr(rep.out, rep.out_len, nt_progs[i].expect);
 			kprintf("[abi] %-18s %-9s -> %-7s %llu syscalls, %u pages, exit %d  %s\n",

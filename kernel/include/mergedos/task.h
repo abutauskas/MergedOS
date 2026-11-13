@@ -99,6 +99,8 @@ struct exec_report {
  * not be loaded.
  */
 int task_exec(const char *name, const void *image, size_t len, struct exec_report *rep);
+int task_exec_args(const char *name, const void *image, size_t len, const char *const *argv,
+		   struct exec_report *rep);
 
 struct task *task_current(void);
 struct task *task_new(const char *name);        /* on the process list, no memory yet */

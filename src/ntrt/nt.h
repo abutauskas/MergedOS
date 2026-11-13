@@ -79,6 +79,7 @@ typedef struct {
 #define STATUS_ENTRYPOINT_NOT_FOUND   0xC0000139u
 #define STATUS_DLL_INIT_FAILED        0xC0000142u
 #define STATUS_KEY_DELETED            0xC000017Cu
+#define STATUS_MESSAGE_NOT_FOUND      0xC0000109u
 #define STATUS_NOT_FOUND              0xC0000225u
 #define STATUS_RESOURCE_DATA_NOT_FOUND 0xC0000089u
 #define STATUS_RESOURCE_TYPE_NOT_FOUND 0xC000008Au
@@ -178,6 +179,8 @@ void *nt_alloc(size_t n);               /* zeroed heap memory */
 void nt_free(void *p);
 NTSTATUS nt_vm_alloc(void **base, size_t size);
 const char *nt_status_name(NTSTATUS s);
+void nt_set_trace(bool on);
+void nt_trace_line(const char *what, const UNICODE_STRING *name, NTSTATUS st);
 
 /* Paths (rtl.c): NT or DOS path -> absolute UTF-8 VFS path. */
 NTSTATUS nt_unix_path(const UNICODE_STRING *name, u64 root, char *out, size_t cap);

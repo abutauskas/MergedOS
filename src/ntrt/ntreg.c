@@ -256,6 +256,7 @@ static NTSTATUS open_key(u64 *handle, const OBJECT_ATTRIBUTES *oa, bool create, 
 	if (!oa || !oa->name)
 		return STATUS_INVALID_PARAMETER;
 	s = resolve(oa, create, path, ntn, disp);
+	nt_trace_line(create ? "NtCreateKey" : "NtOpenKey", oa->name, s);
 	if (s)
 		return s;
 	o = nt_obj_new(NTH_KEY);

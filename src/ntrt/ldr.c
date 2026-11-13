@@ -1350,3 +1350,44 @@ static API void *w_RtlImageRvaToVa(void *nt, u64 base, u32 rva, void **last)
 	return (void *)(base + rva);
 }
 EXPORT(RtlImageRvaToVa);
+
+/* user32's LoadStringW: string tables are RT_STRING bundles of 16 length-prefixed strings. */
+static API int w_LoadStringW(u64 inst, u32 id, wchar *buf, int cch)
+{
+	u64 info[3] = { 6, (id >> 4) + 1, 0x409 };
+	u8 *ent;
+	const u16 *s;
+	u32 size, n;
+	u64 base = inst ? inst : rt_params->image_base;
+
+	if (ldr_find_resource(base, info, 3, &ent)) {
+		info[2] = 0;
+		if (ldr_find_resource(base, info, 3, &ent))
+			return 0;
+	}
+	s = (const u16 *)(base + ((u32 *)ent)[0]);
+	size = ((u32 *)ent)[1] / 2;
+	for (u32 i = 0; i < (id & 15) && size; i++) {
+		u32 l = (u32)s[0] + 1;
+
+		if (l > size)
+			return 0;
+		s += l;
+		size -= l;
+	}
+	if (!size)
+		return 0;
+	n = s[0];
+	if (n + 1 > size)
+		return 0;
+	if (!cch) {                     /* caller wants a pointer to the resource string */
+		*(const u16 **)buf = s + 1;
+		return (int)n;
+	}
+	if (n > (u32)cch - 1)
+		n = (u32)cch - 1;
+	memcpy(buf, s + 1, n * 2);
+	buf[n] = 0;
+	return (int)n;
+}
+EXPORT(LoadStringW);

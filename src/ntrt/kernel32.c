@@ -391,6 +391,7 @@ void ntrt_start(struct ntrt_params *p)
 	nt_peb = peb;
 	ldr_init();
 	nt_init_process();
+	nt_set_trace(false);   /* flip to true to log file and registry opens on stderr */
 	nt_sync_init();
 	ldr_process_start();   /* binds imports, runs DllMains, calls the entry point */
 }
