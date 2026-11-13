@@ -48,6 +48,8 @@ SHARED_C := \
 	abi_dispatch/personality_xnu.c \
 	abi_dispatch/personality_nt.c \
 	kernel/ramfs.c \
+	kernel/net/netcore.c \
+	kernel/net/tcp.c \
 	hardware_probe/hw_classify.c \
 	de_selector/de_policy.c \
 	pkg_translate/tar.c \
@@ -124,7 +126,7 @@ KERNEL_S := \
 	kernel/arch/x86_64/entry.S \
 	kernel/initrd_blob.S
 
-TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c tests/test_darwin.c
+TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c tests/test_darwin.c tests/test_net.c
 
 KOBJS := $(patsubst %,$(BUILD)/obj/%.o,$(basename $(KERNEL_S) $(KERNEL_C) $(SHARED_C) $(UI_C)))
 KDEPS := $(KOBJS:.o=.d)

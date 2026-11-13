@@ -71,6 +71,7 @@ void test_fence(void);
 void test_filetype(void);
 void test_ramfs(void);
 void test_darwin(void);
+void test_net(void);
 
 /* Recording back end for the ui/ toolkit (test_main.c). */
 extern char mock_draw_log[8192];

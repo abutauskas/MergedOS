@@ -36,6 +36,25 @@ enum merr {
 	MERR_SRCH,      /* no such process                    */
 	MERR_TIMEDOUT,  /* wait timed out                     */
 	MERR_MFILE,     /* descriptor table full              */
+	/* sockets */
+	MERR_NOTSOCK,         /* not a socket */
+	MERR_DESTADDRREQ,     /* destination address required */
+	MERR_MSGSIZE,         /* message too long */
+	MERR_NOPROTOOPT,      /* protocol option not available */
+	MERR_PROTONOSUPPORT,  /* protocol not supported */
+	MERR_AFNOSUPPORT,     /* address family not supported */
+	MERR_ADDRINUSE,       /* address in use */
+	MERR_ADDRNOTAVAIL,    /* address not available */
+	MERR_NETUNREACH,      /* network unreachable */
+	MERR_CONNABORTED,     /* connection aborted */
+	MERR_CONNRESET,       /* connection reset by peer */
+	MERR_NOBUFS,          /* no buffer space */
+	MERR_ISCONN,          /* already connected */
+	MERR_NOTCONN,         /* not connected */
+	MERR_CONNREFUSED,     /* connection refused */
+	MERR_HOSTUNREACH,     /* host unreachable */
+	MERR_ALREADY,         /* operation already in progress */
+	MERR_INPROGRESS,      /* operation in progress */
 	MERR_MAX
 };
 
