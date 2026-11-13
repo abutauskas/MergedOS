@@ -139,6 +139,13 @@ def main():
         m.wait("ls /")                                  # typed into the shell by the click
         m.wait("<DIR>")
         m.wait("msh:/>")
+        # Click the first file the Files window lists (a sample PNG): the Viewer opens it.
+        text = m.log.decode(errors="replace")
+        rx, ry = map(int, re.search(r"\[desk\] window files row0 (\d+) (\d+)", text).groups())
+        m.click_at(files, (rx, ry))
+        m.wait("[desk] files: home/samples/sample.png")
+        m.wait("[desk] viewer: /home/samples/sample.png: PNG image (image/png), image decoded")
+        files = (rx, ry)                                # where the pointer now is
         # The new window may cover the terminal's title bar: drag the Files window instead.
         text = m.log.decode(errors="replace")
         tx, ty = map(int, re.search(r"\[desk\] window files title (\d+) (\d+)", text).groups())
@@ -154,7 +161,8 @@ def main():
         assert PASSWORD not in log2 and "not-the-password" not in log2, "password leaked"
         assert log2.index("[login] ok") < log2.index("[de] session"), "desktop before login"
         print("e2e: boot 2: wizard skipped, 2 wrong passwords rejected, right one accepted, "
-              "saved desktop (Retro) started;\n     mouse click on a launcher opened its window and ran its command, title-bar drag moved the window")
+              "saved desktop (Retro) started;\n     mouse click on a launcher opened its window and ran its command, a click on a file "
+              "opened it in the Viewer, title-bar drag moved the window")
 
         # ---- boot 3: text mode still asks ------------------------------------
         m = Machine(kernel, disk, "gfx=off")

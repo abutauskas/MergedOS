@@ -286,10 +286,15 @@ Window kinds:
   minimises it), so the shell always has a home. Its content is the text
   console, which the host repaints.
 - System: hardware summary and memory figures.
-- Files: the programs and text files on the ramdisk; clicking a line types
-  `run <path>` or `cat <path>` into the shell and raises the terminal.
+- Files: every regular file on the ramdisk; clicking a program types
+  `run <path>` into the shell and raises the terminal, clicking any other
+  file opens it in the Viewer.
 - Mergedfence: enabled state and counters, with an On/Off button that
   types `mergedfence on` or `off`.
+- Viewer: a tab strip (Text, Hex, Image, Info, plus Up/Down to page) above
+  either text lines or an RGB picture the host supplies, scaled to fit
+  (whole multiples up to 8x, nearest-neighbour shrinking) and drawn as
+  runs of equal pixels with `ui_draw_fill`. See "File types and viewers".
 
 The portable code draws all window content itself from lines of text the
 host supplies through a callback; icons, controls and buttons are built
@@ -333,6 +338,55 @@ closes it. Repaints flicker slightly because they draw straight to the
 framebuffer, and console output that lands under a drag outline can leave
 a mark until the next repaint of that spot. No compositor, wallpapers or
 settings.
+
+## File types and viewers [implemented, module 6]
+
+`filetype/` is portable (linked into the kernel, host tests and tools),
+allocation-free, and bounds-checks every offset it reads from a file.
+
+- `ft_identify(buf, len, name_hint)` returns a kind, class, human name,
+  MIME type and a detail string. Order: packages (`pkg_probe`, so
+  `.deb`/`.rpm`/`.merged`/AppImage keep their meaning), executables
+  (`binfmt_probe`; personality and architecture in the detail), magic
+  numbers and structure (images, audio, video, PDF, zip and its
+  OOXML/EPUB/ODF/JAR/Android flavours by member names, compressors, tar,
+  fonts, SQLite, ISO 9660, MBR/GPT), then UTF-8 text (scripts by `#!`,
+  JSON, XML/HTML/SVG, Markdown and CSV by shape or name), and only then
+  the file name; content always wins over the extension.
+- `ft_meta_read()` reads cheap header facts: image dimensions (PNG, BMP,
+  JPEG SOF, GIF, WebP VP8/VP8L/VP8X, ICO), audio format and length (WAV
+  chunks, FLAC STREAMINFO, MP3 frame header as a CBR estimate), AVI
+  frames, PDF page objects (`/Type /Page` counted: a heuristic), ISO
+  volume label, partition counts.
+- Viewers produce one line at a time: sanitised UTF-8 text (tabs
+  expanded, control bytes and malformed UTF-8 replaced, lines cut at 96
+  columns), a 16-byte hex dump, an info card, zip listings from the
+  central directory (local headers when it is missing) with stored and
+  packed sizes, tar and tar.gz listings (gzip decoded into a scratch
+  buffer; a prefix when it does not fit).
+- `ft_image_decode()` decodes BMP (24/32-bit, BI_RGB or standard
+  bitfields, both row orders) and PNG (non-interlaced, all colour types,
+  bit depths 1-16, palette transparency; alpha is blended over white)
+  into a caller buffer of packed RGB. PNG uses the shared inflate code
+  through a new zlib entry point (Adler-32 checked); every chunk CRC is
+  checked. Several IDAT chunks are joined in the scratch area. The size
+  limit is the buffer: the kernel Viewer holds 256 x 192 pixels and 200
+  KiB of scanlines, so larger pictures are refused with a message.
+
+The kernel side: `open <path>` (also `xdg-open`, `start`, `Invoke-Item`,
+`view`) still launches `.app` bundles, packages and programs; any other
+file goes to the Viewer window when the desktop runs (the shell posts the
+path, the desktop thread loads it), or prints the info card and a text or
+hex preview in text mode. `file <path>...` (`assoc`, `Get-ItemProperty`)
+prints type, detail and MIME type. The command-line word
+`view=<path>` opens a file in the Viewer at start.
+
+Identified only, not rendered: JPEG, GIF, WebP, ICO, HEIF/AVIF; all audio
+(there is no sound driver) and video; PDF, office documents and e-books;
+xz, zstd, bzip2, 7z and RAR contents; fonts, databases and disk images.
+Their info card says so. SVG is shown as source text. The Viewer reads
+ramdisk files only (there is no VFS yet), pages with Up/Down tabs (no
+wheel or keyboard scrolling) and shows one document at a time.
 
 ## Unified shell [core implemented]
 

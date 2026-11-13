@@ -59,5 +59,11 @@ enum de_id de_session_current(void);
 /* kernel/deskrun.c: graphical shell. False without a framebuffer. */
 bool desktop_start(enum de_id layout);
 int  desktop_selftest(void);
+/* Show a ramdisk file (native path) in the Viewer window; false when the
+ * desktop is not running. */
+bool desktop_view(const char *path);
+/* Decode a BMP/PNG with the Viewer's buffers (only while the desktop is not
+ * running): 0 and the size, or the ft_image_decode() error. */
+int  desktop_view_decode(const u8 *data, size_t len, u32 *w, u32 *h);
 
 #endif /* MERGEDOS_DE_SELECTOR_H */

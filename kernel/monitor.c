@@ -15,7 +15,9 @@
 #include <mergedos/monitor.h>
 #include <mergedos/sched.h>
 #include <mergedos/task.h>
+#include "abi_dispatch/binfmt.h"
 #include "de_selector/de_selector.h"
+#include "filetype/filetype.h"
 #include "mergedfence/fence.h"
 #include "pkg_translate/pkg.h"
 #include "src/msh/msh.h"
@@ -260,6 +262,109 @@ static int cmd_ps(void)
 	return 0;
 }
 
+/* ---- any file: type, Viewer window or text preview ------------------------ */
+
+/* Resolve a path in either notation to a ramdisk file. */
+static int find_file(const char *who, const char *arg, char *native, size_t cap,
+		     const u8 **data, size_t *size)
+{
+	if (!arg) {
+		kprintf("usage: %s <path>\n", who);
+		return -MERR_INVAL;
+	}
+	if (msh_path_to_native(arg, native, cap) < 0)
+		return -MERR_RANGE;
+	if (initrd_find(native, data, size)) {
+		kprintf("%s: %s: %s\n", who, arg, initrd_is_dir(native[0] == '/' ? native + 1 :
+				native) ? "directory" : "no such file");
+		return -MERR_NOENT;
+	}
+	return 0;
+}
+
+static int cmd_file(int argc, char **argv)
+{
+	int rc = argc < 2 ? -MERR_INVAL : 0;
+
+	if (argc < 2)
+		kprintf("usage: file <path>...\n");
+	for (int i = 1; i < argc; i++) {
+		char native[128];
+		const u8 *data;
+		size_t size;
+		struct ft_type t;
+		struct ft_meta m;
+		char facts[48];
+
+		if (find_file("file", argv[i], native, sizeof(native), &data, &size)) {
+			rc = -MERR_NOENT;
+			continue;
+		}
+		ft_identify(data, size, native, &t);
+		ft_meta_read(data, size, &t, &m);
+		facts[0] = '\0';
+		if (m.width && m.height)
+			ksnprintf(facts, sizeof(facts), ", %u x %u", (unsigned)m.width,
+				  (unsigned)m.height);
+		else if (m.duration_ms)
+			ksnprintf(facts, sizeof(facts), ", %u ch %u Hz, %llu ms", (unsigned)m.channels,
+				  (unsigned)m.rate, (unsigned long long)m.duration_ms);
+		kprintf("%s: %s%s%s%s [%s]\n", argv[i], t.name, t.detail[0] ? ", " : "", t.detail,
+			facts, t.mime);
+	}
+	return rc;
+}
+
+/*
+ * open: .app bundles, packages and programs start as before; any other file
+ * goes to the Viewer window when the desktop runs, else its info card and
+ * a text or hex preview are printed here.
+ */
+static int cmd_open(const char *arg)
+{
+	static struct ft_doc doc;
+	char native[128], line[FT_LINE_MAX];
+	const u8 *data;
+	size_t size;
+	struct binfmt_info bi;
+	unsigned view;
+	int rc, rows;
+
+	if (arg && msh_path_to_native(arg, native, sizeof(native)) >= 0 && is_app_bundle(native))
+		return cmd_pkg(arg, false, true);
+	rc = find_file("open", arg, native, sizeof(native), &data, &size);
+	if (rc)
+		return rc;
+	ft_doc_open(&doc, data, size, native, scratch_buf, sizeof(scratch_buf));
+	if (doc.type.kind == FT_PACKAGE)
+		return cmd_pkg(arg, false, true);
+	if (!binfmt_probe(data, size, &bi) && bi.format != BINFMT_SCRIPT)
+		return cmd_run(arg);
+	if (desktop_view(native)) {
+		kprintf("open: %s: %s, shown in the Viewer window\n", arg, doc.type.name);
+		return 0;
+	}
+	if (doc.views & FT_VIEW_IMAGE) {
+		u32 w, h;
+
+		rc = desktop_view_decode(data, size, &w, &h);
+		if (rc)
+			ksnprintf(doc.note, sizeof(doc.note), "image not shown: %s", ft_image_error(rc));
+		else
+			ksnprintf(doc.note, sizeof(doc.note), "image decodes: %u x %u RGB",
+				  (unsigned)w, (unsigned)h);
+	}
+	for (int i = 0; ft_doc_line(&doc, FT_VIEW_INFO, i, line, sizeof(line)); i++)
+		kprintf("  %s\n", line);
+	view = doc.views & FT_VIEW_TEXT ? FT_VIEW_TEXT : FT_VIEW_HEX;
+	rows = view == FT_VIEW_TEXT ? 12 : 8;
+	if (size)
+		kprintf("  -- %s preview --\n", view == FT_VIEW_TEXT ? "text" : "hex");
+	for (int i = 0; i < rows && ft_doc_line(&doc, view, i, line, sizeof(line)); i++)
+		kprintf("  %s\n", line);
+	return 0;
+}
+
 static int cmd_help(void)
 {
 	size_t count;
@@ -462,9 +567,9 @@ int monitor_exec(const char *line)
 	case MSH_RUN:
 		return argv[1] ? cmd_run(argv[1]) : -MERR_INVAL;
 	case MSH_OPEN:
-		if (!argv[1])
-			return -MERR_INVAL;
-		return cmd_pkg(argv[1], false, true);
+		return cmd_open(argv[1]);
+	case MSH_FILE:
+		return cmd_file(argc, argv);
 	case MSH_PKG:
 		if (argc == 3 && !strcmp(argv[1], "inspect"))
 			return cmd_pkg(argv[2], true, false);
@@ -532,6 +637,13 @@ int monitor_selftest(void)
 		{ "C:\\bin\\hello.freebsd", true },             /* ELF, FreeBSD personality */
 		{ "run /bin/hello.macho", true },               /* Mach-O, XNU personality  */
 		{ "open /Applications/Hello.app", true },       /* .app bundle              */
+		{ "file /home/samples/sample.png /home/samples/sample.zip", true },
+		{ "file /home/samples/random.bin", true },
+		{ "Get-ItemProperty C:\\home\\samples\\sample.wav", true },
+		{ "open /home/samples/sample.png", true },      /* info card + decode check */
+		{ "open /home/samples/sample.zip", true },      /* listing                  */
+		{ "open /home/samples/sample.csv", true },      /* text preview             */
+		{ "file /home/samples/no-such-file", false },
 		{ "mpkg inspect /pkg/hello_1.0-1_amd64.deb", true },
 		{ "mpkg inspect /pkg/hello-1.0-1.x86_64.rpm", true },
 		{ "mpkg inspect /Applications/Hello.app", true },
