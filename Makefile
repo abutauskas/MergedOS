@@ -124,7 +124,7 @@ KERNEL_S := \
 	kernel/arch/x86_64/entry.S \
 	kernel/initrd_blob.S
 
-TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c
+TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c tests/test_darwin.c
 
 KOBJS := $(patsubst %,$(BUILD)/obj/%.o,$(basename $(KERNEL_S) $(KERNEL_C) $(SHARED_C) $(UI_C)))
 KDEPS := $(KOBJS:.o=.d)
@@ -268,6 +268,76 @@ DYN_BINS := $(BUILD)/guest/dyntest.gnu $(BUILD)/guest/libdyntest.so \
 	    $(BUILD)/guest/dyntest.musl $(BUILD)/guest/libdyntest-musl.so
 GUEST_BINS += $(DYN_BINS)
 
+# Darwin user space: MergedOS's own dyld and libSystem.B.dylib plus small
+# command-line programs, built as x86-64 Mach-O with the host clang and
+# ld64.lld (apt: clang lld). Without them empty files are produced and the
+# kernel reports the checks as skipped. Installed only in the sysroot module,
+# laid out as a Darwin root: usr/lib/{dyld,libSystem.B.dylib,...}.
+DARWIN_CC ?= clang
+DARWIN_LLD ?= $(shell for c in ld64.lld ld64.lld-18; do command -v $$c && break; done 2>/dev/null)
+DARWIN_DIR := $(BUILD)/guest/darwin
+DARWIN_ROOT := $(DARWIN_DIR)/root
+DARWIN_LINKROOT := $(DARWIN_DIR)/linkroot
+DARWIN_CFLAGS := -target x86_64-apple-macos10.15 -ffreestanding -fPIC -Os -fno-stack-protector \
+	-Wall -Wextra -Isrc/darwin
+DARWIN_LDFLAGS := -arch x86_64 -platform_version macos 10.15 10.15 -no_uuid
+DARWIN_HAVE := $(and $(DARWIN_LLD),$(shell command -v $(DARWIN_CC) 2>/dev/null))
+# $(call DARWIN_BUILD,output,recipe-when-toolchain-present)
+DARWIN_BUILD = @mkdir -p $(dir $@); if [ -n "$(DARWIN_HAVE)" ]; then $(2); \
+	else echo "note: clang/ld64.lld not found, $(notdir $@) left out"; : > $@; fi
+
+$(DARWIN_DIR)/%.o: src/darwin/%.c src/darwin/mini.h
+	$(call DARWIN_BUILD,$@,$(DARWIN_CC) $(DARWIN_CFLAGS) -c $< -o $@)
+
+$(DARWIN_ROOT)/usr/lib/dyld: $(DARWIN_DIR)/dyld.o
+	$(call DARWIN_BUILD,$@,$(DARWIN_LLD) $(DARWIN_LDFLAGS) -e _dyld_start \
+		-pagezero_size 0x7ff000000000 -o $@ $<)
+$(DARWIN_ROOT)/usr/lib/libSystem.B.dylib: $(DARWIN_DIR)/libsystem.o
+	$(call DARWIN_BUILD,$@,$(DARWIN_LLD) $(DARWIN_LDFLAGS) -dylib \
+		-install_name /usr/lib/libSystem.B.dylib -o $@ $<)
+$(DARWIN_ROOT)/usr/lib/libgreet.dylib: $(DARWIN_DIR)/libgreet.o $(DARWIN_ROOT)/usr/lib/libSystem.B.dylib
+	$(call DARWIN_BUILD,$@,$(DARWIN_LLD) $(DARWIN_LDFLAGS) -dylib -install_name /usr/lib/libgreet.dylib \
+		-o $@ $^)
+$(DARWIN_ROOT)/usr/lib/libwrap.dylib: $(DARWIN_DIR)/libwrap.o $(DARWIN_ROOT)/usr/lib/libSystem.B.dylib \
+		$(DARWIN_ROOT)/usr/lib/libgreet.dylib
+	$(call DARWIN_BUILD,$@,$(DARWIN_LLD) $(DARWIN_LDFLAGS) -dylib -install_name /usr/lib/libwrap.dylib \
+		-syslibroot $(DARWIN_ROOT) -reexport_library $(DARWIN_ROOT)/usr/lib/libgreet.dylib \
+		-o $@ $< $(DARWIN_ROOT)/usr/lib/libSystem.B.dylib)
+
+# Link-time stand-ins (what an SDK's .tbd files are): same install names, but
+# libwrap defines everything itself, so programs bind to libwrap by ordinal and
+# the real, re-exporting libwrap.dylib has to resolve through libgreet at run time.
+$(DARWIN_LINKROOT)/usr/lib/libwrap.dylib: $(DARWIN_DIR)/libwrap_stub.o
+	$(call DARWIN_BUILD,$@,$(DARWIN_LLD) $(DARWIN_LDFLAGS) -dylib -install_name /usr/lib/libwrap.dylib \
+		-o $@ $<)
+$(DARWIN_LINKROOT)/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation: \
+		$(DARWIN_DIR)/libfoundation_stub.o
+	$(call DARWIN_BUILD,$@,$(DARWIN_LLD) $(DARWIN_LDFLAGS) -dylib -install_name \
+		/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation -o $@ $<)
+
+DARWIN_LINK = $(DARWIN_LLD) $(DARWIN_LDFLAGS) -syslibroot $(DARWIN_LINKROOT)
+DARWIN_SYSTEM := $(DARWIN_ROOT)/usr/lib/libSystem.B.dylib
+$(DARWIN_ROOT)/bin/darwin-hello: $(DARWIN_DIR)/hello.o $(DARWIN_SYSTEM)
+	$(call DARWIN_BUILD,$@,$(DARWIN_LINK) -o $@ $^)
+$(DARWIN_ROOT)/bin/darwin-fileio: $(DARWIN_DIR)/fileio.o $(DARWIN_SYSTEM)
+	$(call DARWIN_BUILD,$@,$(DARWIN_LINK) -o $@ $^)
+# Chained fixups (LC_DYLD_CHAINED_FIXUPS) instead of classic rebase/bind opcodes.
+$(DARWIN_ROOT)/bin/darwin-argv: $(DARWIN_DIR)/argv.o $(DARWIN_SYSTEM)
+	$(call DARWIN_BUILD,$@,$(DARWIN_LLD) -arch x86_64 -platform_version macos 12.0 12.0 -no_uuid \
+		-fixup_chains -o $@ $^)
+$(DARWIN_ROOT)/bin/darwin-dyn: $(DARWIN_DIR)/dyn.o $(DARWIN_LINKROOT)/usr/lib/libwrap.dylib \
+		$(DARWIN_SYSTEM)
+	$(call DARWIN_BUILD,$@,$(DARWIN_LINK) -U _optional_symbol -U _optional_data -o $@ $^)
+# Needs Foundation, which MergedOS does not provide: exercises the missing-library report.
+$(DARWIN_ROOT)/bin/darwin-needs-foundation: $(DARWIN_DIR)/needs_foundation.o \
+		$(DARWIN_LINKROOT)/System/Library/Frameworks/Foundation.framework/Versions/C/Foundation \
+		$(DARWIN_SYSTEM)
+	$(call DARWIN_BUILD,$@,$(DARWIN_LINK) -o $@ $^)
+
+DARWIN_BINS := $(addprefix $(DARWIN_ROOT)/,usr/lib/dyld usr/lib/libSystem.B.dylib \
+	usr/lib/libgreet.dylib usr/lib/libwrap.dylib bin/darwin-hello bin/darwin-fileio \
+	bin/darwin-argv bin/darwin-dyn bin/darwin-needs-foundation)
+
 # A real Windows x64 console program against the MinGW-w64 C runtime, when the
 # cross compiler is installed. Without it an empty file is produced and the
 # kernel reports the check as skipped.
@@ -364,7 +434,7 @@ $(INITRD): $(IMAGE_DEPS)
 # module (qemu -initrd). Merged under / by the kernel, read-only. Not in the
 # kernel image, so it does not count towards the kernel footprint.
 SYSROOT := $(BUILD)/sysroot.tar
-$(SYSROOT): $(DYN_BINS) tools/mkimage.py
+$(SYSROOT): $(DYN_BINS) $(DARWIN_BINS) tools/mkimage.py
 	$(PYTHON) tools/mkimage.py sysroot --guest-dir $(BUILD)/guest --src-dir src/guest --out $@
 
 .PHONY: sysroot
@@ -388,12 +458,13 @@ $(BUILD)/host/mpkg: tools/mpkg.c $(SHARED_C)
 $(BUILD)/host/run_tests: $(TEST_C) $(SHARED_C) $(UI_C) $(wildcard tests/*.h)
 	@mkdir -p $(dir $@)
 	$(HOSTCC) $(HOST_CFLAGS) $(HOST_SAN) -DFIXTURE_DIR=\"$(BUILD)/fixtures\" \
+		-DDARWIN_ROOT=\"$(DARWIN_ROOT)\" \
 		-o $@ $(TEST_C) $(SHARED_C) $(UI_C)
 
 .PHONY: test test-host test-boot test-disk test-e2e
 test: test-host test-boot test-disk test-e2e
 
-test-host: $(BUILD)/host/run_tests $(BUILD)/fixtures/.stamp
+test-host: $(BUILD)/host/run_tests $(BUILD)/fixtures/.stamp $(DARWIN_BINS)
 	$(BUILD)/host/run_tests
 
 test-boot: $(KERNEL_ELF32) $(USER_TAR) $(SYSROOT)

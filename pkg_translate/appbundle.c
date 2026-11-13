@@ -42,6 +42,42 @@ static void add_dylib(const char *install_name, void *arg)
 	pkg_add_dylib_dep(arg, install_name);
 }
 
+/* Attribute each imported symbol to the library it comes from, when that library
+ * is one MergedOS does not provide: that is the "what is missing" list. */
+static void add_import(const char *lib, const char *sym, bool weak, void *arg)
+{
+	struct pkg_manifest *m = arg;
+	size_t sl = strlen(sym), n;
+
+	(void)weak;
+	if (!lib)
+		return;
+	for (u32 i = 0; i < m->ndeps; i++) {
+		struct pkg_dep *d = &m->deps[i];
+
+		if (d->base || strncmp(d->name, lib, sizeof(d->name) - 1))
+			continue;
+		for (const char *p = d->imports; *p;) {         /* already listed? */
+			size_t tl = 0;
+
+			while (p[tl] && p[tl] != ' ')
+				tl++;
+
+			if (tl == sl && !memcmp(p, sym, sl))
+				return;
+			p += tl + (p[tl] ? 1 : 0);
+		}
+		d->nimports++;
+		n = strlen(d->imports);
+		if (n + sl + 2 < sizeof(d->imports)) {
+			if (n)
+				d->imports[n++] = ' ';
+			memcpy(d->imports + n, sym, sl + 1);
+		}
+		return;
+	}
+}
+
 int pkg_translate_app(const u8 *plist, size_t plist_len, const u8 *exe, size_t exe_len,
 		      struct pkg_manifest *m)
 {
@@ -80,6 +116,7 @@ int pkg_translate_app(const u8 *plist, size_t plist_len, const u8 *exe, size_t e
 		mos_strlcpy(m->foreign_arch, binfmt_arch_name(info.arch), sizeof(m->foreign_arch));
 		mos_strlcpy(m->arch, binfmt_arch_name(info.arch), sizeof(m->arch));
 		(void)binfmt_macho_dylibs(exe, exe_len, add_dylib, m);
+		(void)binfmt_macho_imports(exe, exe_len, add_import, m);
 	}
 
 	mos_snprintf(m->store_prefix, sizeof(m->store_prefix), "/pkg/app/%s/%s",

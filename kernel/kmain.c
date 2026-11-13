@@ -222,6 +222,58 @@ static int abi_boot_check(void)
 		}
 	}
 	/*
+	 * Dynamically linked Mach-O programs on the XNU personality: MergedOS's own
+	 * dyld and libSystem.B.dylib from the sysroot module. The last program needs
+	 * Foundation, which does not exist here: dyld must name it and the symbols.
+	 */
+	{
+		static const char *const env[] = { "PATH=/bin", "HOME=/home/user", NULL };
+		static const struct {
+			const char *path;
+			const char *argv[4];
+			int exit_code;
+			const char *expect, *expect2;
+		} mach[] = {
+			{ "/bin/darwin-hello", { "darwin-hello", NULL }, 0,
+			  "dyld + libSystem OK", "" },
+			{ "/bin/darwin-argv", { "darwin-argv", "alpha", "beta", NULL }, 0,
+			  "argc=3 a1=alpha a2=beta", "argv:42: 3.14:0xff HOME=/home/user" },
+			{ "/bin/darwin-fileio", { "darwin-fileio", NULL }, 0,
+			  "read: line 2", "size=16 unlink=0 missing=1" },
+			{ "/bin/darwin-dyn", { "darwin-dyn", NULL }, 0,
+			  "hello dyn (init=1, calls=8)", "twice=42 weak=absent/absent" },
+			{ "/bin/darwin-needs-foundation", { "darwin-needs-foundation", NULL }, 1,
+			  "Library not loaded: /System/Library/Frameworks/Foundation.framework",
+			  "_NSLog" },
+		};
+		const u8 *img;
+		size_t len;
+
+		if (initrd_find("usr/lib/dyld", &img, &len) ||
+		    initrd_find("usr/lib/libSystem.B.dylib", &img, &len)) {
+			kprintf("[mach] Darwin user space  skipped (no sysroot module or built "
+				"without clang/ld64.lld)\n");
+		} else {
+			for (unsigned i = 0; i < ARRAY_SIZE(mach); i++) {
+				struct exec_report rep = { 0 };
+				int rc = task_exec_argv(mach[i].path, mach[i].argv, env, &rep);
+				bool ok = !rc && rep.exit_code == mach[i].exit_code && !rep.faulted &&
+					  rep.personality == ABI_XNU &&
+					  mos_memstr(rep.out, rep.out_len, mach[i].expect) &&
+					  mos_memstr(rep.out, rep.out_len, mach[i].expect2);
+
+				kprintf("[mach] %-18s %-9s -> %-7s %llu syscalls, %u pages, exit %d  %s\n",
+					mach[i].argv[0], binfmt_format_name(rep.format),
+					abi_personality_name(rep.personality),
+					(unsigned long long)rep.syscalls, rep.pages,
+					rc ? rc : rep.exit_code, ok ? "OK" : "FAILED");
+				if (!ok)
+					kprintf("[mach]   output: %s\n", rep.out);
+				failures += !ok;
+			}
+		}
+	}
+	/*
 	 * Real Windows x64 console programs on the NT personality: imports bound
 	 * to the built-in Win32 runtime. win_hello.exe uses the unmodified
 	 * MinGW-w64 C runtime; the Wine builtins are only in the ramdisk when the

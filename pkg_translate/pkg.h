@@ -60,6 +60,9 @@ struct pkg_dep {
 	char capability[80];    /* distro-neutral name it resolves to     */
 	bool base;              /* provided by a MergedOS base runtime or
 				   by the bundle itself, not another package */
+	u16 nimports;           /* .app: symbols the executable binds from this
+				   library (counted for libraries not provided)  */
+	char imports[72];       /* ... the first few, space separated            */
 };
 
 #define PKG_F_SCRIPTS      0x1  /* has install-time maintainer scripts            */

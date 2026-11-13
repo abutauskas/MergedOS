@@ -514,6 +514,7 @@ int binfmt_pe_relocs(const void *image, size_t len, binfmt_pe_reloc_fn fn, void 
 #define MACHO_CPU_ARM64      0x0100000Cu
 #define MH_EXECUTE           2
 #define MH_DYLIB             6
+#define MH_DYLINKER          7
 #define LC_UNIXTHREAD        0x5
 #define LC_LOAD_DYLINKER     0xE
 #define LC_SEGMENT_64        0x19
@@ -631,7 +632,9 @@ static int macho_probe(const u8 *p, size_t len, struct binfmt_info *out)
 struct macho_plan_ctx {
 	struct exec_plan *plan;
 	u64 slice_off, slice_len;
-	bool have_entry;
+	u64 text_va, main_off;
+	const u8 *slice_base;
+	bool have_entry, have_text, have_main;
 };
 
 static int macho_plan_lc(u32 cmd, const u8 *lc, u32 cmdsize, void *arg)
@@ -658,7 +661,27 @@ static int macho_plan_lc(u32 cmd, const u8 *lc, u32 cmdsize, void *arg)
 		s->prot = initprot & (EXEC_PROT_R | EXEC_PROT_W | EXEC_PROT_X);
 		if (s->filesz > s->memsz || !mos_in_range(ctx->slice_len, s->fileoff, s->filesz))
 			return -MERR_NOEXEC;
+		if (s->fileoff == 0 && s->filesz && !ctx->have_text) {
+			ctx->text_va = s->vaddr;        /* __TEXT: where the mach_header lives */
+			ctx->have_text = true;
+		}
 		s->fileoff += ctx->slice_off;   /* make it relative to the whole image */
+	} else if (cmd == LC_LOAD_DYLINKER) {
+		u32 no = cmdsize >= 12 ? rd32le(lc + 8) : 0, n = 0;
+
+		if (no < 12 || no >= cmdsize)
+			return -MERR_NOEXEC;
+		while (no + n < cmdsize && lc[no + n])
+			n++;
+		if (no + n >= cmdsize || n == 0)
+			return -MERR_NOEXEC;
+		plan->interp_off = (u64)(lc - ctx->slice_base) + no + ctx->slice_off;
+		plan->interp_len = n;
+	} else if (cmd == LC_MAIN) {
+		if (cmdsize < 24)
+			return -MERR_NOEXEC;
+		ctx->main_off = rd64le(lc + 8);
+		ctx->have_main = true;
 	} else if (cmd == LC_UNIXTHREAD) {
 		/* cmd, cmdsize, flavor, count, then x86_thread_state64 (rip is word 16). */
 		if (cmdsize < 16 + 21 * 8 || rd32le(lc + 8) != X86_THREAD_STATE64)
@@ -678,17 +701,26 @@ static int macho_plan(const u8 *p, size_t len, struct exec_plan *plan)
 
 	if (plan->info.arch != BIN_ARCH_X86_64 || !binfmt_macho_slice(p, len, &slice, &slice_len))
 		return -MERR_NOTSUP;
-	if (plan->info.flags & (BINFMT_F_DYNAMIC | BINFMT_F_LIBRARY))
-		return -MERR_NOTSUP;            /* needs dyld + libSystem */
-	if (rd32le(slice + 12) != MH_EXECUTE)
+	if (plan->info.flags & BINFMT_F_LIBRARY)
+		return -MERR_NOTSUP;
+	if (rd32le(slice + 12) != MH_EXECUTE && rd32le(slice + 12) != MH_DYLINKER)
 		return -MERR_NOEXEC;
 
 	ctx.slice_off = (u64)(slice - p);
 	ctx.slice_len = slice_len;
+	ctx.slice_base = slice;
 	rc = macho_for_each_lc(slice, slice_len, macho_plan_lc, &ctx);
 	if (rc)
 		return rc;
-	return (ctx.have_entry && plan->nsegs) ? 0 : -MERR_NOEXEC;
+	if (ctx.have_main && ctx.have_text) {
+		plan->entry = ctx.text_va + ctx.main_off;
+		ctx.have_entry = true;
+	}
+	plan->image_base = ctx.text_va;
+	plan->lc_main = ctx.have_main;
+	if (!ctx.have_entry || !plan->nsegs)
+		return -MERR_NOEXEC;
+	return 0;
 }
 
 #define LC_LOAD_DYLIB       0xC
@@ -725,6 +757,208 @@ int binfmt_macho_dylibs(const void *image, size_t len, binfmt_dylib_fn fn, void 
 	if (!binfmt_macho_slice(image, len, &slice, &slice_len))
 		return -MERR_NOEXEC;
 	return macho_for_each_lc(slice, slice_len, macho_dylib_lc, &ctx);
+}
+
+/* ---- imported symbols (what dyld will have to bind) ------------------------ */
+
+#define LC_REEXPORT_DYLIB_  0x8000001Fu
+#define LC_LOAD_UPWARD_     0x80000023u
+#define LC_DYLD_INFO_       0x22
+#define LC_DYLD_INFO_ONLY_  0x80000022u
+#define LC_DYLD_CHAINED_    0x80000034u
+#define MACHO_MAX_LIBS      32
+
+struct macho_imp_ctx {
+	const u8 *s;
+	size_t len;
+	const char *lib[MACHO_MAX_LIBS];
+	u32 nlib;
+	u32 bind_off[2], bind_size[2];
+	u32 chain_off, chain_size;
+	binfmt_import_fn fn;
+	void *arg;
+};
+
+static int macho_imp_lc(u32 cmd, const u8 *lc, u32 cmdsize, void *arg)
+{
+	struct macho_imp_ctx *c = arg;
+
+	if (cmd == LC_LOAD_DYLIB || cmd == LC_LOAD_WEAK_DYLIB || cmd == LC_REEXPORT_DYLIB_ ||
+	    cmd == LC_LOAD_UPWARD_) {
+		u32 no;
+
+		if (cmdsize < 24)
+			return -MERR_NOEXEC;
+		no = rd32le(lc + 8);
+		if (no >= cmdsize || !memchr(lc + no, '\0', cmdsize - no))
+			return -MERR_NOEXEC;
+		if (c->nlib < MACHO_MAX_LIBS)
+			c->lib[c->nlib++] = (const char *)lc + no;
+	} else if (cmd == LC_DYLD_INFO_ || cmd == LC_DYLD_INFO_ONLY_) {
+		if (cmdsize < 40)
+			return -MERR_NOEXEC;
+		c->bind_off[0] = rd32le(lc + 16);
+		c->bind_size[0] = rd32le(lc + 20);
+		c->bind_off[1] = rd32le(lc + 32);       /* lazy */
+		c->bind_size[1] = rd32le(lc + 36);
+	} else if (cmd == LC_DYLD_CHAINED_) {
+		if (cmdsize < 16)
+			return -MERR_NOEXEC;
+		c->chain_off = rd32le(lc + 8);
+		c->chain_size = rd32le(lc + 12);
+	}
+	return 0;
+}
+
+static bool macho_uleb(const u8 **pp, const u8 *end)
+{
+	while (*pp < end)
+		if (!(*(*pp)++ & 0x80))
+			return true;
+	return false;
+}
+
+static const char *macho_lib(const struct macho_imp_ctx *c, int ord)
+{
+	return ord > 0 && (u32)ord <= c->nlib ? c->lib[ord - 1] : NULL;
+}
+
+/* Classic bind / lazy-bind opcode stream: report each DO_BIND's library and symbol. */
+static int macho_bind_stream(struct macho_imp_ctx *c, u32 off, u32 size)
+{
+	const u8 *p, *end;
+	const char *sym = NULL;
+	bool weak = false;
+	int ord = 0;
+
+	if (!size)
+		return 0;
+	if (!mos_in_range(c->len, off, size))
+		return -MERR_NOEXEC;
+	p = c->s + off;
+	end = p + size;
+	while (p < end) {
+		u8 b = *p++, op = b & 0xF0, imm = b & 0x0F;
+		bool bind = false;
+
+		switch (op) {
+		case 0x00: case 0x50: break;
+		case 0x10: ord = imm; break;
+		case 0x20: {
+			const u8 *q = p;
+			u64 v = 0;
+			int sh = 0;
+
+			do {
+				if (q >= end)
+					return -MERR_NOEXEC;
+				v |= (u64)(*q & 0x7F) << (sh < 63 ? sh : 63);
+				sh += 7;
+			} while (*q++ & 0x80);
+			p = q;
+			ord = v > 0xFFFF ? 0 : (int)v;
+			break;
+		}
+		case 0x30: ord = imm ? -1 : 0; break;   /* special: not a library */
+		case 0x40: {
+			const u8 *nul = memchr(p, '\0', (size_t)(end - p));
+
+			if (!nul)
+				return -MERR_NOEXEC;
+			sym = (const char *)p;
+			weak = imm & 1;
+			p = nul + 1;
+			break;
+		}
+		case 0x60: case 0x70: case 0x80:
+			if (!macho_uleb(&p, end))
+				return -MERR_NOEXEC;
+			break;
+		case 0x90: case 0xB0: bind = true; break;
+		case 0xA0:
+			if (!macho_uleb(&p, end))
+				return -MERR_NOEXEC;
+			bind = true;
+			break;
+		case 0xC0:
+			if (!macho_uleb(&p, end) || !macho_uleb(&p, end))
+				return -MERR_NOEXEC;
+			bind = true;
+			break;
+		default:
+			return -MERR_NOTSUP;            /* threaded binds (arm64e) */
+		}
+		if (bind && sym)
+			c->fn(macho_lib(c, ord), sym, weak, c->arg);
+	}
+	return 0;
+}
+
+/* LC_DYLD_CHAINED_FIXUPS: the imports table lists every symbol directly. */
+static int macho_chained_imports(struct macho_imp_ctx *c)
+{
+	const u8 *h;
+	u32 imp_off, sym_off, count, fmt, esz;
+
+	if (!c->chain_size)
+		return 0;
+	if (c->chain_size < 28 || !mos_in_range(c->len, c->chain_off, c->chain_size))
+		return -MERR_NOEXEC;
+	h = c->s + c->chain_off;
+	imp_off = rd32le(h + 8);
+	sym_off = rd32le(h + 12);
+	count = rd32le(h + 16);
+	fmt = rd32le(h + 20);
+	esz = fmt == 1 ? 4 : fmt == 2 ? 8 : fmt == 3 ? 16 : 0;
+	if (!esz)
+		return -MERR_NOTSUP;
+	if (sym_off > c->chain_size || !mos_in_range(c->chain_size, imp_off, (u64)count * esz))
+		return -MERR_NOEXEC;
+	for (u32 i = 0; i < count; i++) {
+		u32 name, ord;
+		bool weak;
+		const u8 *e = h + imp_off + (u64)i * esz;
+
+		if (fmt == 3) {
+			u64 v = rd64le(e);
+
+			ord = (u32)(v & 0xFFFF);
+			ord = ord >= 0xFFF0 ? 0 : ord;
+			weak = (v >> 16) & 1;
+			name = (u32)(v >> 32);
+		} else {
+			u32 v = rd32le(e);
+
+			ord = v & 0xFF;
+			ord = ord >= 0xF0 ? 0 : ord;
+			weak = (v >> 8) & 1;
+			name = v >> 9;
+		}
+		if (name >= c->chain_size - sym_off ||
+		    !memchr(h + sym_off + name, '\0', c->chain_size - sym_off - name))
+			return -MERR_NOEXEC;
+		c->fn(macho_lib(c, (int)ord), (const char *)h + sym_off + name, weak, c->arg);
+	}
+	return 0;
+}
+
+int binfmt_macho_imports(const void *image, size_t len, binfmt_import_fn fn, void *arg)
+{
+	struct macho_imp_ctx c = { .fn = fn, .arg = arg };
+	size_t slice_len;
+	int rc;
+
+	if (!binfmt_macho_slice(image, len, &c.s, &slice_len))
+		return -MERR_NOEXEC;
+	c.len = slice_len;
+	rc = macho_for_each_lc(c.s, slice_len, macho_imp_lc, &c);
+	if (!rc)
+		rc = macho_bind_stream(&c, c.bind_off[0], c.bind_size[0]);
+	if (!rc)
+		rc = macho_bind_stream(&c, c.bind_off[1], c.bind_size[1]);
+	if (!rc)
+		rc = macho_chained_imports(&c);
+	return rc;
 }
 
 /* ======================================================================== */

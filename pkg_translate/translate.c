@@ -322,6 +322,14 @@ int pkg_manifest_print(const struct pkg_manifest *m, char *out, size_t cap)
 		     m->deps[i].capability, m->deps[i].base ? " [base]" : "");
 	if (m->deps_total > m->ndeps)
 		EMIT("  requires     ... and %u more\n", m->deps_total - m->ndeps);
+	/* A bundle that links libraries MergedOS lacks: say exactly which, and what it imports. */
+	for (u32 i = 0; m->format == PKG_MACOS_APP && i < m->ndeps; i++)
+		if (!m->deps[i].base) {
+			EMIT("  missing      %s (not provided by MergedOS)", m->deps[i].name);
+			if (m->deps[i].nimports)
+				EMIT(": %u imports: %s", m->deps[i].nimports, m->deps[i].imports);
+			EMIT("\n");
+		}
 #undef EMIT
 	return (int)n;
 }

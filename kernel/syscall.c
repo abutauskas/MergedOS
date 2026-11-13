@@ -308,6 +308,16 @@ long msys_set_fs_base(struct task *t, u64 base)
 	return 0;
 }
 
+long msys_set_gs_base(struct task *t, u64 base)
+{
+	(void)t;
+	if (base >= USER_TOP)
+		return -MERR_PERM;
+	thread_current()->gs_base = base;
+	wrmsr(0xC0000101, base);                /* IA32_GS_BASE */
+	return 0;
+}
+
 long msys_get_fs_base(struct task *t, u64 uaddr)
 {
 	u64 base = thread_current()->fs_base;

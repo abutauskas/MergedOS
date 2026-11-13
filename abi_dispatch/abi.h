@@ -176,6 +176,7 @@ long msys_mmap(struct task *t, u64 addr, u64 len, u32 prot, u32 flags, int fd, u
 long msys_munmap(struct task *t, u64 addr, u64 len);
 long msys_set_fs_base(struct task *t, u64 base);
 long msys_get_fs_base(struct task *t, u64 uaddr);
+long msys_set_gs_base(struct task *t, u64 base);        /* XNU thread-local storage */
 u64  msys_clock_ns(void);
 long msys_nanosleep(struct task *t, u64 ns);
 /* Add rights (MSYS_PROT_*) to pages that are already mapped; never removes any. */

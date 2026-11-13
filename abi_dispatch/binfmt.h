@@ -70,6 +70,7 @@ struct exec_plan {
 	u64 image_base, image_size;     /* PE: preferred base and SizeOfImage           */
 	u64 interp_off;                 /* ELF: PT_INTERP path (NUL-terminated) in the  */
 	u32 interp_len;                 /*      image, 0 when there is none             */
+	bool lc_main;                   /* Mach-O: entry is LC_MAIN (a C function, needs dyld) */
 	bool relative;                  /* ELF ET_DYN: vaddrs/entry need a load bias    */
 	u32 nsegs;
 	struct exec_seg seg[EXEC_MAX_SEGS];
@@ -94,6 +95,16 @@ bool binfmt_macho_slice(const void *image, size_t len, const u8 **slice, size_t 
 /* Report the install name of every dylib a Mach-O image links against. */
 typedef void (*binfmt_dylib_fn)(const char *install_name, void *arg);
 int binfmt_macho_dylibs(const void *image, size_t len, binfmt_dylib_fn fn, void *arg);
+
+/*
+ * Report every symbol a Mach-O program imports, with the install name of the
+ * library it is bound to (NULL for flat-namespace, self and main-executable
+ * binds). Reads the classic bind/lazy-bind opcodes or the chained-fixups
+ * import table; fully bounds-checked. Returns 0, -MERR_NOEXEC for a corrupt
+ * image or -MERR_NOTSUP for an encoding this build does not read.
+ */
+typedef void (*binfmt_import_fn)(const char *lib, const char *sym, bool weak, void *arg);
+int binfmt_macho_imports(const void *image, size_t len, binfmt_import_fn fn, void *arg);
 
 /*
  * PE32+ import and base-relocation walkers, for the kernel's NT loader.

@@ -576,6 +576,13 @@ def cmd_sysroot(args):
         p = os.path.join(args.guest_dir, name)
         if os.path.exists(p) and os.path.getsize(p):
             tree[dst] = (read(p), 0o755)
+    # Darwin user space (dyld, libSystem, test programs): a ready-made root tree.
+    droot = os.path.join(args.guest_dir, "darwin", "root")
+    for dirpath, _, names in os.walk(droot):
+        for name in names:
+            p = os.path.join(dirpath, name)
+            if os.path.getsize(p):
+                tree[os.path.relpath(p, droot)] = (read(p), 0o755)
     if not tree:
         # Nothing to ship: still write a valid (empty) archive.
         open(args.out, "wb").write(ustar([]))
