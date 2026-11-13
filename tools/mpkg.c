@@ -4,6 +4,7 @@
  *
  *   mpkg inspect <package file | Foo.app directory>
  *   mpkg extract <package file> <output file>     write the package's program
+ *   mpkg ls <squashfs image | AppImage | snap>    list the file system
  *
  * It links exactly the code the kernel links (pkg_translate/), which makes
  * it a convenient way to try real-world packages against the translators.
@@ -13,6 +14,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include "pkg_translate/pkg.h"
+#include "pkg_translate/squashfs.h"
 
 static u8 scratch_buf[64 * 1024 * 1024];
 static struct pkg_scratch scratch = { scratch_buf, sizeof(scratch_buf) };
@@ -96,6 +98,38 @@ static int translate(const char *path, struct pkg_manifest *m, u8 **img, size_t 
 	return pkg_translate(*img, *len, path, &scratch, m);
 }
 
+static int ls_cb(const char *path, const struct sqfs_inode *ino, void *arg)
+{
+	(void)arg;
+	printf("%c %04o %10llu  %s\n", "?d-lbcps"[ino->kind <= 7 ? ino->kind : 0], ino->mode & 07777, (unsigned long long)ino->size, path);
+	return 0;
+}
+
+static int list_squashfs(const char *path)
+{
+	static u8 work[1 << 20] __attribute__((aligned(8)));
+	struct sqfs fs;
+	size_t len;
+	u8 *img = slurp(path, &len);
+	long off = img ? sqfs_find(img, len) : -1;
+	int rc;
+
+	if (off < 0) {
+		fprintf(stderr, "%s: no squashfs image found\n", path);
+		return 1;
+	}
+	rc = sqfs_open(&fs, img + off, len - (size_t)off, work, sizeof(work));
+	if (!rc) {
+		printf("squashfs at offset %ld: %s, block size %u, %u inodes\n", off,
+		       sqfs_comp_name(fs.comp), fs.block_size, fs.inode_count);
+		rc = sqfs_walk(&fs, ls_cb, NULL);
+	}
+	if (rc)
+		fprintf(stderr, "%s: %s\n", path, explain(rc));
+	free(img);
+	return rc ? 1 : 0;
+}
+
 int main(int argc, char **argv)
 {
 	static struct pkg_manifest m;
@@ -104,10 +138,13 @@ int main(int argc, char **argv)
 	size_t len = 0;
 	int rc;
 
+	if (argc == 3 && !strcmp(argv[1], "ls"))
+		return list_squashfs(argv[2]);
 	if (argc < 3 || (strcmp(argv[1], "inspect") && strcmp(argv[1], "extract")) ||
 	    (!strcmp(argv[1], "extract") && argc != 4)) {
 		fprintf(stderr, "usage: mpkg inspect <package|Foo.app>\n"
-				"       mpkg extract <package> <output file>\n");
+				"       mpkg extract <package> <output file>\n"
+				"       mpkg ls <squashfs | AppImage | snap>\n");
 		return 2;
 	}
 

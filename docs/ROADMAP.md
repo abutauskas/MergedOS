@@ -53,12 +53,15 @@ Known limits carried forward:
 
 ## M6 - Package store
 
-- xz and zstd codecs
+- xz and zstd codecs (done: single-call decoders, CRC32/CRC64/SHA-256 and
+  XXH64 checks; no xz BCJ filters, no zstd dictionaries)
 - Content-addressed store under `/pkg`, installation, removal
 - Dependency resolution over capabilities; base runtimes for glibc and musl
 - Path views enforced through jails
 - Signature verification
-- AppImage, Snap and Flatpak backends (squashfs)
+- AppImage, Snap and Flatpak backends (squashfs). Done: squashfs 4.0 reader
+  (gzip/xz/zstd/lz4), AppImage and Snap metadata and program extraction,
+  Flatpak bundle metadata. Open: Flatpak payload (OSTree objects), mounting
 
 ## M7 - NT and Darwin user space
 

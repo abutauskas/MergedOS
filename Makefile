@@ -51,6 +51,10 @@ SHARED_C := \
 	de_selector/de_policy.c \
 	pkg_translate/tar.c \
 	pkg_translate/inflate.c \
+	pkg_translate/xz.c \
+	pkg_translate/zstd.c \
+	pkg_translate/squashfs.c \
+	pkg_translate/bundles.c \
 	pkg_translate/containers.c \
 	pkg_translate/pkgfmt.c \
 	pkg_translate/metadata.c \
@@ -117,7 +121,7 @@ KERNEL_S := \
 	kernel/initrd_blob.S \
 	kernel/ntrt_blob.S
 
-TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c
+TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c
 
 KOBJS := $(patsubst %,$(BUILD)/obj/%.o,$(basename $(KERNEL_S) $(KERNEL_C) $(SHARED_C) $(UI_C)))
 KDEPS := $(KOBJS:.o=.d)

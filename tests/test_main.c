@@ -10,6 +10,19 @@
 
 int test_checks, test_failures;
 
+u8 *load_fixture_opt(const char *rel, size_t *len)
+{
+	char path[512];
+	FILE *f;
+
+	snprintf(path, sizeof(path), "%s/%s", FIXTURE_DIR, rel);
+	f = fopen(path, "rb");
+	if (!f)
+		return NULL;
+	fclose(f);
+	return load_fixture(rel, len);
+}
+
 u8 *load_fixture(const char *rel, size_t *len)
 {
 	char path[512];
@@ -148,6 +161,8 @@ int main(void)
 		{ "abi dispatch (Linux / FreeBSD / XNU / NT)", test_dispatch },
 		{ "desktop selector policy", test_de_policy },
 		{ "msh (aliases, tokenizer, paths)", test_msh },
+		{ "xz + zstd decoders (vectors, prefixes, fuzz)", test_codec },
+		{ "squashfs (4 compressors, fragments, walk, fuzz)", test_squashfs },
 		{ "package translation (deb / rpm / apk / pacman / .app)", test_pkg },
 		{ "ui toolkit + setup wizard (hit-test, focus, i18n, hashing)", test_ui },
 		{ "storage (MBR/GPT scan, safe allocation, config sector)", test_storage },

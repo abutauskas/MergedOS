@@ -115,6 +115,7 @@ const char *pkg_codec_name(enum pkg_codec c)
 	case PKG_CODEC_XZ:    return "xz";
 	case PKG_CODEC_ZSTD:  return "zstd";
 	case PKG_CODEC_BZIP2: return "bzip2";
+	case PKG_CODEC_LZ4:   return "lz4";
 	default:              return "unknown";
 	}
 }

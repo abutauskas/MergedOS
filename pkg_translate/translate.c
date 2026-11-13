@@ -9,7 +9,7 @@
 
 static bool codec_supported(enum pkg_codec c)
 {
-	return c == PKG_CODEC_NONE || c == PKG_CODEC_GZIP;
+	return c == PKG_CODEC_NONE || c == PKG_CODEC_GZIP || c == PKG_CODEC_XZ || c == PKG_CODEC_ZSTD;
 }
 
 /* "control.tar.xz" -> xz. Falls back to sniffing the content. */
@@ -93,11 +93,13 @@ static int tarpkg_translate(const u8 *img, size_t len, struct pkg_scratch *s,
 		size_t tar_len = len - member_off, consumed = len - member_off;
 		int rc = 0;
 
-		if (codec == PKG_CODEC_GZIP) {
+		if (codec != PKG_CODEC_NONE) {
 			if (!s || !s->buf)
 				return -MERR_NOMEM;
-			rc = gz_decode(img + member_off, len - member_off, s->buf, s->cap,
-				       &consumed, &tar_len);
+			rc = pkg_decode(codec, img + member_off, len - member_off, s->buf, s->cap,
+					&consumed, &tar_len);
+			if (rc == -MERR_NOMEM || rc == -MERR_NOTSUP)
+				return rc;
 			if (rc < 0)
 				return -MERR_NOEXEC;
 			tar = s->buf;
@@ -149,6 +151,11 @@ int pkg_translate(const u8 *img, size_t len, const char *name_hint, struct pkg_s
 		return pkg_translate_app(img, len, NULL, 0, m);
 	case PKG_MERGED:
 		return merged_translate(img, len, m);
+	case PKG_APPIMAGE:
+	case PKG_SNAP:
+	case PKG_FLATPAK:
+		rc = bundle_translate(img, len, scratch, m);
+		break;
 	case PKG_UNKNOWN:
 		return -MERR_NOEXEC;
 	default:
@@ -186,6 +193,8 @@ int pkg_payload_exec(const u8 *img, size_t len, const struct pkg_manifest *m,
 	size_t payload_len, off = 0;
 	int rc;
 
+	if (m->format == PKG_APPIMAGE || m->format == PKG_SNAP || m->format == PKG_FLATPAK)
+		return bundle_exec(img, len, m, scratch, exe, exe_len, path, path_cap);
 	if (m->format != PKG_DEB && m->format != PKG_RPM && m->format != PKG_APK &&
 	    m->format != PKG_PACMAN)
 		return -MERR_NOTSUP;
@@ -284,18 +293,25 @@ int pkg_manifest_print(const struct pkg_manifest *m, char *out, size_t cap)
 	EMIT("  package      %s %s\n", m->name, m->version);
 	if (m->summary[0])
 		EMIT("  summary      %s\n", m->summary);
-	if (m->bundle_id[0])
+	if (m->bundle_id[0] && m->format == PKG_MACOS_APP)
 		EMIT("  bundle id    %s (min OS %s)\n", m->bundle_id, m->min_os[0] ? m->min_os : "?");
+	else if (m->bundle_id[0])
+		EMIT("  app id       %s\n", m->bundle_id);
 	EMIT("  arch         %s -> %s\n", m->foreign_arch[0] ? m->foreign_arch : "?", m->arch);
 	if (m->format == PKG_MERGED)
 		EMIT("  personality  native (%s)\n", m->libc);
 	else
 		EMIT("  personality  %s (%s)\n", abi_personality_name(m->personality), m->libc);
-	if (m->format != PKG_MACOS_APP)
-		EMIT("  payload      %s, %llu bytes%s\n", pkg_codec_name(m->payload_codec),
+	if (m->format == PKG_FLATPAK)
+		EMIT("  payload      OSTree static delta, %llu bytes (not decoded)\n",
+		     (unsigned long long)m->payload_size);
+	else if (m->format != PKG_MACOS_APP)
+		EMIT("  payload      %s%s, %llu bytes%s\n",
+		     m->format == PKG_APPIMAGE || m->format == PKG_SNAP ? "squashfs/" : "",
+		     pkg_codec_name(m->payload_codec),
 		     (unsigned long long)m->payload_size,
 		     (m->flags & PKG_F_PAYLOAD_OK) ? "" : " (codec not built in)");
-	else
+	if (m->executable[0])
 		EMIT("  executable   %s\n", m->executable);
 	if (m->flags & PKG_F_SCRIPTS)
 		EMIT("  scripts      maintainer scripts present (run jailed at install)\n");

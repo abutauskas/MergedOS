@@ -112,6 +112,23 @@ enum pkg_codec pkg_codec_sniff(const u8 *p, size_t len)
 	return PKG_CODEC_UNKNOWN;
 }
 
+int pkg_decode(enum pkg_codec codec, const u8 *in, size_t inlen, u8 *buf, size_t cap,
+	       size_t *consumed, size_t *produced)
+{
+	size_t need = codec == PKG_CODEC_XZ ? XZ_WORK_SIZE : ZSTD_WORK_SIZE, wk;
+
+	*produced = 0;
+	if (codec == PKG_CODEC_GZIP)
+		return gz_decode(in, inlen, buf, cap, consumed, produced);
+	if (codec != PKG_CODEC_XZ && codec != PKG_CODEC_ZSTD)
+		return -MERR_NOTSUP;
+	if (!buf || cap < need + 8)
+		return -MERR_NOMEM;
+	wk = (size_t)(ALIGN_DOWN((u64)buf + cap - need, 8) - (u64)buf);
+	return (codec == PKG_CODEC_XZ ? xz_decode : zstd_decode)(in, inlen, buf, wk, consumed,
+								 produced, buf + wk, cap - wk);
+}
+
 int pkg_unpack(enum pkg_codec codec, const u8 *in, size_t inlen, struct pkg_scratch *s,
 	       const u8 **out, size_t *outlen)
 {
@@ -123,13 +140,13 @@ int pkg_unpack(enum pkg_codec codec, const u8 *in, size_t inlen, struct pkg_scra
 		*outlen = inlen;
 		return 0;
 	}
-	if (codec != PKG_CODEC_GZIP)
-		return -MERR_NOTSUP;            /* xz / zstd / bzip2: codec not built in */
+	if (codec != PKG_CODEC_GZIP && codec != PKG_CODEC_XZ && codec != PKG_CODEC_ZSTD)
+		return -MERR_NOTSUP;            /* bzip2: codec not built in */
 	if (!s || !s->buf || !s->cap)
 		return -MERR_NOMEM;
-	rc = gz_decode(in, inlen, s->buf, s->cap, &consumed, outlen);
+	rc = pkg_decode(codec, in, inlen, s->buf, s->cap, &consumed, outlen);
 	if (rc < 0)
-		return -MERR_NOEXEC;
+		return rc == -MERR_NOTSUP || rc == -MERR_NOMEM ? rc : -MERR_NOEXEC;
 	*out = s->buf;
 	return rc;
 }
