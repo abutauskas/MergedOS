@@ -20,7 +20,7 @@
 static struct {
 	const char *prefix;
 	struct rnode *root;
-} mounts[] = { { "tmp", NULL }, { "home/user", NULL } };
+} mounts[] = { { "tmp", NULL }, { "home/user", NULL }, { "etc/resolv.conf", NULL }, { "etc/hosts", NULL } };
 
 int fg_pgid;
 
@@ -28,6 +28,10 @@ void vfs_init(void)
 {
 	for (unsigned i = 0; i < ARRAY_SIZE(mounts); i++)
 		mounts[i].root = ramfs_new_root();
+	/* The last two mounts are single files (root node is the file): the rest of
+	 * /etc stays read-only in the ramdisk. */
+	for (unsigned i = 2; i < ARRAY_SIZE(mounts); i++)
+		mounts[i].root->dir = false;
 }
 
 /* ---- open files and descriptors ------------------------------------------- */
@@ -223,6 +227,28 @@ static long user_path(struct task *t, u64 upath, char *canon)
 		return rc;
 	normalize(raw, canon, PATH_MAX_LEN);
 	return 0;
+}
+
+/* Create or replace a file on a writable mount (canonical path, e.g. "etc/hosts"). */
+int vfs_write_file(const char *path, const void *data, size_t len)
+{
+	char canon[PATH_MAX_LEN];
+	const char *rest;
+	struct rnode *root, *n;
+	int rc;
+
+	normalize(path, canon, sizeof(canon));
+	root = mount_of(canon, &rest);
+	if (!root)
+		return -MERR_ACCES;
+	n = root;
+	if (*rest) {
+		rc = ramfs_create(root, rest, false, false, &n);
+		if (rc)
+			return rc;
+	}
+	ramfs_truncate(n, 0);
+	return ramfs_write(n, 0, data, len) < 0 ? -MERR_NOMEM : 0;
 }
 
 int vfs_image(const char *path, const u8 **data, size_t *size)

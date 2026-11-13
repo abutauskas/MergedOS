@@ -50,6 +50,7 @@ struct netdev {
 	char name[8];
 	u8 mac[6];
 	int (*send)(struct netdev *dev, const void *frame, u32 len);   /* 0 or -MERR_* */
+	int (*poll)(struct netdev *dev, struct nstack *ns);            /* frames delivered */
 	void *priv;
 };
 

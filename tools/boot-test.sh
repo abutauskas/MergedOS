@@ -29,6 +29,7 @@ status=0
 
 for mem in "$@"; do
 	timeout "$TIMEOUT" "$QEMU" -m "$mem" -no-reboot -display none -serial stdio \
+		-netdev user,id=n0 -device virtio-net-pci,netdev=n0 \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
 		-kernel "$KERNEL" $mod -append "selftest" >"$LOG" 2>&1
 	rc=$?

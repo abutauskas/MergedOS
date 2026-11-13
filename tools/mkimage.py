@@ -514,6 +514,8 @@ def build_tree(guest_dir, src_dir):
         "pkg/hello-1.0-r0.apk": (make_apk(elf), 0o644),
         "pkg/hello-1.0-1-x86_64.pkg.tar.gz": (make_pacman(elf), 0o644),
         "etc/motd": (MOTD, 0o644),
+        "etc/resolv.conf": (b"", 0o644),        # placeholders, overlaid by the writable file mounts
+        "etc/hosts": (b"127.0.0.1 localhost\n", 0o644),
         "etc/mergedfence/default.merged": (fence_default(), 0o644),
     }
 

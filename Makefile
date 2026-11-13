@@ -93,6 +93,9 @@ KERNEL_C := \
 	kernel/deskrun.c \
 	kernel/ata.c \
 	kernel/ahci.c \
+	kernel/net/netdev.c \
+	kernel/net/virtio_net.c \
+	kernel/net/e1000.c \
 	kernel/kmain.c \
 	kernel/console.c \
 	kernel/printk.c \
