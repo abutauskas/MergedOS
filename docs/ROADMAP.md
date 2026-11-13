@@ -77,7 +77,9 @@ Still open:
 - Host Wine's Win32 DLLs on the NT personality; target console programs
   first
 - Mach traps and IPC; `dyld` and `libSystem`; target Darwin command-line
-  tools
+  tools. Started: own `dyld` + `libSystem.B.dylib`, BSD/Mach call tables,
+  CLI programs run (docs/DARWIN_USERSPACE.md); Mach IPC, Apple frameworks
+  and real macOS binaries are still open
 - Binary property lists, code-signature parsing
 
 ## M8 - Graphics and desktops

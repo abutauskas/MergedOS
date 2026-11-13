@@ -125,7 +125,7 @@ KERNEL_S := \
 	kernel/initrd_blob.S \
 	kernel/ntrt_blob.S
 
-TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c
+TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c tests/test_darwin.c
 
 KOBJS := $(patsubst %,$(BUILD)/obj/%.o,$(basename $(KERNEL_S) $(KERNEL_C) $(SHARED_C) $(UI_C)))
 KDEPS := $(KOBJS:.o=.d)
@@ -405,12 +405,13 @@ $(BUILD)/host/mpkg: tools/mpkg.c $(SHARED_C)
 $(BUILD)/host/run_tests: $(TEST_C) $(SHARED_C) $(UI_C) $(wildcard tests/*.h)
 	@mkdir -p $(dir $@)
 	$(HOSTCC) $(HOST_CFLAGS) $(HOST_SAN) -DFIXTURE_DIR=\"$(BUILD)/fixtures\" \
+		-DDARWIN_ROOT=\"$(DARWIN_ROOT)\" \
 		-o $@ $(TEST_C) $(SHARED_C) $(UI_C)
 
 .PHONY: test test-host test-boot test-disk test-e2e
 test: test-host test-boot test-disk test-e2e
 
-test-host: $(BUILD)/host/run_tests $(BUILD)/fixtures/.stamp
+test-host: $(BUILD)/host/run_tests $(BUILD)/fixtures/.stamp $(DARWIN_BINS)
 	$(BUILD)/host/run_tests
 
 test-boot: $(KERNEL_ELF32) $(SYSROOT)

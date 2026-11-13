@@ -54,9 +54,10 @@ the image base as their own segment; Mach-O `__PAGEZERO` (protection 0) is a
 reservation and is not mapped; a fat slice's offsets are rebased to the
 whole file.
 
-Images that need a dynamic linker (ELF `PT_INTERP`, Mach-O `LC_MAIN` /
-`LC_LOAD_DYLINKER`) and PE DLLs are recognised and rejected with "not
-supported yet" rather than run incorrectly. PE32+ programs that *import*
+Images that need a dynamic linker run under it (ELF `PT_INTERP`: see
+DYNAMIC_LINKING.md; Mach-O `LC_LOAD_DYLINKER`: see DARWIN_USERSPACE.md); a
+Mach-O `LC_MAIN` without a dylinker and PE DLLs are recognised and rejected
+with "not supported yet" rather than run incorrectly. PE32+ programs that *import*
 DLLs are run: see "NT: imports and the built-in Win32 runtime" below.
 
 ## Stage 2: initial process state

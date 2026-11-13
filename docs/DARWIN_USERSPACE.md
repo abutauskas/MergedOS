@@ -31,8 +31,8 @@ redistributable here, so MergedOS ships its own, written from scratch.
   `getpid`/`getuid`-family, `getentropy`, `csops` and `proc_info` (stubs),
   `shared_region_check_np` (`ENOMEM`: dyld maps libraries itself),
   `thread_selfid`, `bsdthread_register`, `ulock_wait`/`ulock_wake`, `unlink`,
-  `mkdir`, `rename`, `getcwd`-less `fcntl`, `ioctl(TIOCGETA)` as `ENOTTY`,
-  `gettimeofday`, `sigaction`/`sigprocmask` (accepted).
+  `mkdir`, `rmdir`, `rename`, `dup`/`dup2`, `fcntl`, `ioctl` (`ENOTTY`),
+  `gettimeofday`, `sigaction`/`sigprocmask`/`sigaltstack` (accepted).
 - Mach traps: `mach_reply_port`, `task_self_trap`, `thread_self_trap`,
   `host_self_trap` (fixed port names), `mach_msg_trap` (a canned
   `KERN_NOT_SUPPORTED` MIG reply when a reply is wanted, otherwise
@@ -79,3 +79,39 @@ redistributable here, so MergedOS ships its own, written from scratch.
   provided by MergedOS, the imported symbols (`binfmt_macho_imports`), so a
   bundle that needs Foundation/AppKit says exactly what is missing instead of
   failing vaguely.
+
+## Status
+
+Passing in the boot self-test (needs the sysroot module and the host
+clang + ld64.lld): `darwin-hello` (classic fixups), `darwin-argv` (chained
+fixups, argv/env/heap/`snprintf`), `darwin-fileio` (`fopen`/`fgets`/`stat`/
+`unlink` on `/tmp`), `darwin-dyn` (a re-exporting dylib, a dylib initialiser
+and data, a weak import resolved to 0, flat-namespace lookup), and
+`darwin-needs-foundation`, which dyld refuses with the exact library and
+symbols (`Library not loaded: .../Foundation (image not found)`, `Missing
+symbols: _NSApplicationMain _NSLog`). Host tests cover the call tables, the
+Mach-O plan, import walking (classic and chained) with truncation fuzzing
+and the `.app` report. Without clang/ld64.lld the Darwin images are empty
+files and the checks are reported as skipped.
+
+Known limits:
+
+- Only programs built against this libSystem are tested. Real macOS binaries
+  need more of libSystem (and usually libc++ / libobjc, which do not exist
+  here): every symbol or library that is absent is reported by dyld, not
+  guessed at. No Apple frameworks, no Objective-C/Swift runtime.
+- Kernel: no `fork`/threads/signals for Darwin programs, no Mach IPC (every
+  `mach_msg` request/reply is answered `KERN_NOT_SUPPORTED`), `ulock_wait`
+  returns at once, `getattrlist`/`proc_info`/`csops` are stubs,
+  `mprotect` inherits the Linux limits (see DYNAMIC_LINKING.md),
+  `hw.memsize`/`hw.physmem` are fixed at 1 GiB, `sysctl` is a small table.
+- dyld: thin x86-64 images only (no fat dylibs), no `dlopen`/`dlsym`, no
+  `DYLD_*` variables, no weak-definition coalescing, no threaded
+  (arm64e) binds, no Objective-C/Swift registration, 24 images, no
+  interposing, `__DATA_CONST` stays writable. Chained pointer formats 2 and 6
+  and import formats 1 to 3 are handled.
+- libSystem: no `scanf`, locale, time zones, threads, signals or sockets;
+  `strtod`/`atof` are absent and `printf` renders `%f` with simple rounding
+  only (no `%e`/`%g`); `malloc` never returns memory to the kernel.
+- Only the first 256 bytes of a program's output are captured by the
+  self-test.

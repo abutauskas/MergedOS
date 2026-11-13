@@ -97,6 +97,16 @@ typedef void (*binfmt_dylib_fn)(const char *install_name, void *arg);
 int binfmt_macho_dylibs(const void *image, size_t len, binfmt_dylib_fn fn, void *arg);
 
 /*
+ * Report every symbol a Mach-O program imports, with the install name of the
+ * library it is bound to (NULL for flat-namespace, self and main-executable
+ * binds). Reads the classic bind/lazy-bind opcodes or the chained-fixups
+ * import table; fully bounds-checked. Returns 0, -MERR_NOEXEC for a corrupt
+ * image or -MERR_NOTSUP for an encoding this build does not read.
+ */
+typedef void (*binfmt_import_fn)(const char *lib, const char *sym, bool weak, void *arg);
+int binfmt_macho_imports(const void *image, size_t len, binfmt_import_fn fn, void *arg);
+
+/*
  * PE32+ import and base-relocation walkers, for the kernel's NT loader.
  *
  * binfmt_pe_imports() calls fn once per imported symbol, in IAT order:
