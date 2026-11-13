@@ -70,6 +70,7 @@ struct exec_plan {
 	u64 image_base, image_size;     /* PE: preferred base and SizeOfImage           */
 	u64 interp_off;                 /* ELF: PT_INTERP path (NUL-terminated) in the  */
 	u32 interp_len;                 /*      image, 0 when there is none             */
+	bool lc_main;                   /* Mach-O: entry is LC_MAIN (a C function, needs dyld) */
 	bool relative;                  /* ELF ET_DYN: vaddrs/entry need a load bias    */
 	u32 nsegs;
 	struct exec_seg seg[EXEC_MAX_SEGS];

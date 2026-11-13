@@ -514,6 +514,7 @@ int binfmt_pe_relocs(const void *image, size_t len, binfmt_pe_reloc_fn fn, void 
 #define MACHO_CPU_ARM64      0x0100000Cu
 #define MH_EXECUTE           2
 #define MH_DYLIB             6
+#define MH_DYLINKER          7
 #define LC_UNIXTHREAD        0x5
 #define LC_LOAD_DYLINKER     0xE
 #define LC_SEGMENT_64        0x19
@@ -631,7 +632,9 @@ static int macho_probe(const u8 *p, size_t len, struct binfmt_info *out)
 struct macho_plan_ctx {
 	struct exec_plan *plan;
 	u64 slice_off, slice_len;
-	bool have_entry;
+	u64 text_va, main_off;
+	const u8 *slice_base;
+	bool have_entry, have_text, have_main;
 };
 
 static int macho_plan_lc(u32 cmd, const u8 *lc, u32 cmdsize, void *arg)
@@ -658,7 +661,27 @@ static int macho_plan_lc(u32 cmd, const u8 *lc, u32 cmdsize, void *arg)
 		s->prot = initprot & (EXEC_PROT_R | EXEC_PROT_W | EXEC_PROT_X);
 		if (s->filesz > s->memsz || !mos_in_range(ctx->slice_len, s->fileoff, s->filesz))
 			return -MERR_NOEXEC;
+		if (s->fileoff == 0 && s->filesz && !ctx->have_text) {
+			ctx->text_va = s->vaddr;        /* __TEXT: where the mach_header lives */
+			ctx->have_text = true;
+		}
 		s->fileoff += ctx->slice_off;   /* make it relative to the whole image */
+	} else if (cmd == LC_LOAD_DYLINKER) {
+		u32 no = cmdsize >= 12 ? rd32le(lc + 8) : 0, n = 0;
+
+		if (no < 12 || no >= cmdsize)
+			return -MERR_NOEXEC;
+		while (no + n < cmdsize && lc[no + n])
+			n++;
+		if (no + n >= cmdsize || n == 0)
+			return -MERR_NOEXEC;
+		plan->interp_off = (u64)(lc - ctx->slice_base) + no + ctx->slice_off;
+		plan->interp_len = n;
+	} else if (cmd == LC_MAIN) {
+		if (cmdsize < 24)
+			return -MERR_NOEXEC;
+		ctx->main_off = rd64le(lc + 8);
+		ctx->have_main = true;
 	} else if (cmd == LC_UNIXTHREAD) {
 		/* cmd, cmdsize, flavor, count, then x86_thread_state64 (rip is word 16). */
 		if (cmdsize < 16 + 21 * 8 || rd32le(lc + 8) != X86_THREAD_STATE64)
@@ -678,17 +701,26 @@ static int macho_plan(const u8 *p, size_t len, struct exec_plan *plan)
 
 	if (plan->info.arch != BIN_ARCH_X86_64 || !binfmt_macho_slice(p, len, &slice, &slice_len))
 		return -MERR_NOTSUP;
-	if (plan->info.flags & (BINFMT_F_DYNAMIC | BINFMT_F_LIBRARY))
-		return -MERR_NOTSUP;            /* needs dyld + libSystem */
-	if (rd32le(slice + 12) != MH_EXECUTE)
+	if (plan->info.flags & BINFMT_F_LIBRARY)
+		return -MERR_NOTSUP;
+	if (rd32le(slice + 12) != MH_EXECUTE && rd32le(slice + 12) != MH_DYLINKER)
 		return -MERR_NOEXEC;
 
 	ctx.slice_off = (u64)(slice - p);
 	ctx.slice_len = slice_len;
+	ctx.slice_base = slice;
 	rc = macho_for_each_lc(slice, slice_len, macho_plan_lc, &ctx);
 	if (rc)
 		return rc;
-	return (ctx.have_entry && plan->nsegs) ? 0 : -MERR_NOEXEC;
+	if (ctx.have_main && ctx.have_text) {
+		plan->entry = ctx.text_va + ctx.main_off;
+		ctx.have_entry = true;
+	}
+	plan->image_base = ctx.text_va;
+	plan->lc_main = ctx.have_main;
+	if (!ctx.have_entry || !plan->nsegs)
+		return -MERR_NOEXEC;
+	return 0;
 }
 
 #define LC_LOAD_DYLIB       0xC

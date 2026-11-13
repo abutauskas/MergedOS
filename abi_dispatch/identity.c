@@ -61,6 +61,7 @@ WEAK long msys_readlink(struct task *t, u64 p, u64 b, u64 n) NOSYS
 WEAK long msys_getrandom(struct task *t, u64 b, u64 n) NOSYS
 WEAK long msys_set_fs_base(struct task *t, u64 b) NOSYS
 WEAK long msys_get_fs_base(struct task *t, u64 a) NOSYS
+WEAK long msys_set_gs_base(struct task *t, u64 b) NOSYS
 WEAK u64 msys_clock_ns(void) { return 0; }
 WEAK long msys_nanosleep(struct task *t, u64 ns) NOSYS
 WEAK long msys_protect(struct task *t, u64 a, u64 n, u32 p) NOSYS

@@ -210,6 +210,7 @@ struct exec_dyn {
 	u64 entry;             /* AT_ENTRY: the program's own entry point            */
 	u64 phdr;              /* AT_PHDR: the program's program headers, in memory  */
 	u64 interp_base;       /* AT_BASE: load bias of the interpreter, 0 if static */
+	u64 mach_header;       /* XNU dynamic: the program's mach_header (dyld argument) */
 	u16 phnum, phentsize;
 };
 
@@ -258,7 +259,12 @@ static int build_stack(struct task *t, const struct exec_plan *plan, const struc
 	} else {
 		u8 rnd[16];
 		u64 vec[2 * EXEC_ARGS_MAX + 48];
-		u32 execfn_len = (u32)strlen(args->path) + 1;
+		char apple[sizeof(args->path) + 16] = "executable_path=";
+		const bool dyld = dyn->mach_header != 0;
+		/* Darwin: apple[0] = executable_path=..., kept where AT_EXECFN goes */
+		const char *execfn = dyld ? (mos_strlcpy(apple + 16, args->path, sizeof(apple) - 16),
+					     apple) : args->path;
+		const u32 execfn_len = (u32)strlen(execfn) + 1;
 		const u64 execfn_va = ALIGN_DOWN(USER_STACK_TOP - execfn_len, 16);
 		const u64 str_va = ALIGN_DOWN(execfn_va - args->len - sizeof(rnd), 16);
 		const u64 rnd_va = str_va + args->len;
@@ -280,6 +286,8 @@ static int build_stack(struct task *t, const struct exec_plan *plan, const struc
 			seed ^= seed << 17;
 			rnd[i] = (u8)seed;
 		}
+		if (dyld)
+			vec[n++] = dyn->mach_header;
 		vec[n++] = args->argc;
 		for (u32 i = 0; i < args->argc + args->envc; i++) {
 			vec[n++] = s;
@@ -288,6 +296,10 @@ static int build_stack(struct task *t, const struct exec_plan *plan, const struc
 				vec[n++] = 0;
 		}
 		vec[n++] = 0;
+		if (dyld) {
+			vec[n++] = execfn_va;           /* apple[0], then apple's terminator */
+			vec[n++] = 0;
+		}
 		if (plan->info.personality == ABI_LINUX) {
 			u32 eax, ebx, ecx, hwcap = 0;
 
@@ -312,7 +324,7 @@ static int build_stack(struct task *t, const struct exec_plan *plan, const struc
 		sp = ALIGN_DOWN(str_va - words * 8, 16); /* rsp (argc) 16-aligned at _start */
 		rc = task_copy_to_as(t->pml4, str_va, args->buf, args->len);
 		if (!rc)
-			rc = task_copy_to_as(t->pml4, execfn_va, args->path, execfn_len);
+			rc = task_copy_to_as(t->pml4, execfn_va, execfn, execfn_len);
 		if (!rc)
 			rc = task_copy_to_as(t->pml4, rnd_va, rnd, sizeof(rnd));
 		if (!rc)
@@ -382,8 +394,15 @@ int task_load_image(struct task *t, const u8 *image, size_t len, const struct ex
 	t->brk = t->brk_start;
 	t->mmap_next = TASK_MMAP_BASE;
 
-	/* PT_INTERP: map the real dynamic linker and start it instead of the program. */
+	/* Darwin: LC_MAIN is a C function only dyld may call. */
+	if (!rc && plan.info.personality == ABI_XNU && plan.lc_main && !plan.interp_len)
+		rc = -MERR_NOTSUP;
+
+	/* PT_INTERP / LC_LOAD_DYLINKER: map the real dynamic linker and start it instead
+	 * of the program. A Mach-O linker sits at its own link-time address (no bias). */
 	if (!rc && plan.interp_len) {
+		const bool macho = plan.info.personality == ABI_XNU;
+		const u64 ibias = macho ? 0 : INTERP_LOAD_BASE;
 		char interp[128];
 		struct exec_plan *iplan = kzalloc(sizeof(*iplan));
 		const u8 *iimg;
@@ -392,6 +411,8 @@ int task_load_image(struct task *t, const u8 *image, size_t len, const struct ex
 		if (!iplan) {
 			rc = -MERR_NOMEM;
 		} else {
+			if (plan.interp_len >= sizeof(interp))
+				plan.interp_len = sizeof(interp) - 1;
 			memcpy(interp, image + plan.interp_off, plan.interp_len);
 			interp[plan.interp_len] = '\0';
 			rc = vfs_image(interp[0] == '/' ? interp + 1 : interp, &iimg, &ilen);
@@ -399,13 +420,16 @@ int task_load_image(struct task *t, const u8 *image, size_t len, const struct ex
 				rc = binfmt_load_plan(iimg, ilen, iplan);
 			/* The interpreter must itself be a position-independent object
 			 * without its own interpreter. */
-			if (!rc && (!iplan->relative || iplan->interp_len))
+			if (!rc && (macho ? iplan->info.personality != ABI_XNU  /* its own LC_LOAD_DYLINKER is ignored */
+					  : (!iplan->relative || iplan->interp_len)))
 				rc = -MERR_NOTSUP;
 			if (!rc)
-				rc = load_segments(t, iimg, iplan, INTERP_LOAD_BASE);
+				rc = load_segments(t, iimg, iplan, ibias);
 			if (!rc) {
-				dyn.rip = iplan->entry + INTERP_LOAD_BASE;
-				dyn.interp_base = INTERP_LOAD_BASE;
+				dyn.rip = iplan->entry + ibias;
+				dyn.interp_base = ibias;
+				if (macho)
+					dyn.mach_header = plan.image_base;
 			}
 			kfree(iplan);
 		}
