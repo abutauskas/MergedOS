@@ -172,13 +172,13 @@ $(BUILD)/obj/kernel/ntrt_blob.o: $(NTRT_BIN)
 # User-mode code (Microsoft x64 calling convention) linked at a fixed address
 # and embedded in the kernel as a flat binary; see src/ntrt/ntrt_abi.h.
 
-NTRT_SRC  := src/ntrt/start.S src/ntrt/kernel32.c src/ntrt/crt.c
+NTRT_SRC  := src/ntrt/start.S src/ntrt/kernel32.c src/ntrt/crt.c src/ntrt/ldr.c src/ntrt/ntdll.c src/ntrt/rtl.c src/ntrt/ntsync.c src/ntrt/ntreg.c src/ntrt/ntexc.c
 NTRT_OBJS := $(patsubst src/ntrt/%,$(BUILD)/ntrt/%.o,$(basename $(NTRT_SRC)))
-NTRT_CFLAGS := -std=gnu11 -Os $(WARNINGS) -ffreestanding -fno-builtin \
+NTRT_CFLAGS := -std=gnu11 -Os $(WARNINGS) -ffreestanding -fno-builtin -fshort-wchar \
 	-fno-stack-protector -fno-pic -fno-pie -fcf-protection=none -mcmodel=small \
 	-fno-asynchronous-unwind-tables -fno-tree-loop-distribute-patterns -I.
 
-$(BUILD)/ntrt/%.o: src/ntrt/%.c src/ntrt/rt.h src/ntrt/ntrt_abi.h
+$(BUILD)/ntrt/%.o: src/ntrt/%.c src/ntrt/rt.h src/ntrt/nt.h src/ntrt/ntrt_abi.h
 	@mkdir -p $(dir $@)
 	$(CC) $(NTRT_CFLAGS) -c $< -o $@
 
@@ -264,6 +264,49 @@ $(BUILD)/guest/wine.stamp: FORCE
 	@echo "$(WINE_EXE_DIR)" | cmp -s - $@ || { echo "$(WINE_EXE_DIR)" > $@; rm -rf $(BUILD)/guest/wine; }
 GUEST_BINS += $(BUILD)/guest/wine.stamp $(WINE_EXES)
 
+# ---- Wine's PE DLLs as a separate boot module ---------------------------------
+#
+# `make wine` fetches Debian/Ubuntu's libwine package with apt-get download,
+# unpacks it with dpkg-deb into its own empty directory and copies a chosen set
+# of x86_64-windows PE files (debug sections stripped) and NLS tables into
+# build/wine/wine.tar, laid out as C:\windows\system32. Nothing from it is
+# compiled in, committed, or run on the host: the archive is handed to QEMU as
+# a Multiboot module (-initrd) and only ever executed inside MergedOS, on the
+# NT personality with MergedOS's own ntdll. Every test that needs it skips
+# when the archive is missing.
+WINE_DIR   := $(BUILD)/wine
+WINE_TAR   := $(WINE_DIR)/wine.tar
+WINE_PKG   ?= libwine
+WINE_STRIP ?= x86_64-w64-mingw32-strip
+WINE_PE    := kernel32.dll kernelbase.dll ucrtbase.dll msvcrt.dll advapi32.dll sechost.dll \
+	cmd.exe reg.exe hostname.exe whoami.exe
+WINE_NLS   := locale.nls l_intl.nls c_437.nls c_1252.nls c_20127.nls normnfc.nls normnfd.nls normidna.nls sortdefault.nls
+
+.PHONY: wine wine-optional
+wine: $(WINE_TAR)
+
+# Never fails: tests run without Wine when it cannot be fetched.
+wine-optional:
+	@[ -f $(WINE_TAR) ] || $(MAKE) -s wine >/dev/null 2>&1 || \
+		echo "note: Wine DLLs not available (make wine failed); NT Wine checks will be skipped"
+
+$(WINE_TAR): Makefile
+	@rm -rf $(WINE_DIR)/pkg $(WINE_DIR)/stage
+	@mkdir -p $(WINE_DIR)/deb $(WINE_DIR)/pkg $(WINE_DIR)/stage/windows/system32
+	@ls $(WINE_DIR)/deb/*.deb >/dev/null 2>&1 || (cd $(WINE_DIR)/deb && apt-get download $(WINE_PKG))
+	dpkg-deb -x $$(ls $(WINE_DIR)/deb/*.deb | head -n 1) $(WINE_DIR)/pkg
+	@pe=$$(find $(WINE_DIR)/pkg -type d -name x86_64-windows | head -n 1); \
+	 nls=$$(find $(WINE_DIR)/pkg -type d -name nls | head -n 1); \
+	 strip=$$(command -v $(WINE_STRIP) || echo cp); \
+	 for f in $(WINE_PE); do \
+		if [ "$$strip" = cp ]; then cp "$$pe/$$f" $(WINE_DIR)/stage/windows/system32/; \
+		else $$strip --strip-debug -o $(WINE_DIR)/stage/windows/system32/$$f "$$pe/$$f"; fi || exit 1; \
+	 done; \
+	 for f in $(WINE_NLS); do cp "$$nls/$$f" $(WINE_DIR)/stage/windows/system32/ || exit 1; done
+	tar --format=ustar --owner=0 --group=0 -cf $@.tmp -C $(WINE_DIR)/stage windows
+	@mv $@.tmp $@
+	@echo "built $@ ($$(($$(stat -c %s $@) / 1024)) KiB)"
+
 .PHONY: FORCE
 FORCE:
 
@@ -301,8 +344,8 @@ test: test-host test-boot test-disk test-e2e
 test-host: $(BUILD)/host/run_tests $(BUILD)/fixtures/.stamp
 	$(BUILD)/host/run_tests
 
-test-boot: $(KERNEL_ELF32)
-	QEMU=$(QEMU) QEMU_MEM=$(QEMU_MEM) tools/boot-test.sh $(KERNEL_ELF32)
+test-boot: $(KERNEL_ELF32) wine-optional
+	QEMU=$(QEMU) QEMU_MEM=$(QEMU_MEM) WINE_TAR=$(WINE_TAR) tools/boot-test.sh $(KERNEL_ELF32)
 
 # Install onto an emulated dual-boot IDE disk; prove existing partitions are untouched.
 test-disk: $(KERNEL_ELF32)
@@ -318,11 +361,12 @@ QEMU_FLAGS := -m $(QEMU_MEM) -no-reboot \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04
 
 .PHONY: run run-serial
+WINE_INITRD = $(if $(wildcard $(WINE_TAR)),-initrd $(WINE_TAR))
 run: $(KERNEL_ELF32)
-	$(QEMU) $(QEMU_FLAGS) -kernel $< -serial stdio -append "$(APPEND)"
+	$(QEMU) $(QEMU_FLAGS) -kernel $< $(WINE_INITRD) -serial stdio -append "$(APPEND)"
 
 run-serial: $(KERNEL_ELF32)
-	$(QEMU) $(QEMU_FLAGS) -kernel $< -display none -serial stdio -append "$(APPEND)"
+	$(QEMU) $(QEMU_FLAGS) -kernel $< $(WINE_INITRD) -display none -serial stdio -append "$(APPEND)"
 
 # ---- bootable ISO --------------------------------------------------------------
 

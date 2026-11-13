@@ -141,12 +141,12 @@ int task_map_range(struct task *t, u64 va, u64 len, u32 vmm_prot);
  * kernel/ntload.c: the NT loader for PE images that import DLLs.
  * ntload_place() picks the load address (rebasing the plan if needed) and
  * returns the relocation delta; after the segments are mapped, ntload_link()
- * applies base relocations, maps the built-in Win32 runtime, binds the
- * import table and points `start` at the runtime's process start-up.
+ * applies base relocations, maps the built-in runtime (MergedOS's ntdll,
+ * which binds the imports itself) and points `start` at its start-up.
  */
 int ntload_place(struct exec_plan *plan, u64 *delta);
 int ntload_link(struct task *t, const u8 *image, size_t len, const struct exec_plan *plan,
-		u64 delta, struct user_start *start);
+		u64 delta, const struct exec_args *args, struct user_start *start);
 void task_user_fault(struct trap_frame *tf, u64 fault_addr);
 
 /* History ring for the shell. Returns the number of valid records copied. */

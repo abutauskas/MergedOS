@@ -329,6 +329,151 @@ static const struct abi_sysent nt_sysent[] = {
 	[NT_SVC_QUERY_SYSTEM_TIME]         = { nt_query_system_time,       "NtQuerySystemTime" },
 };
 
+/*
+ * MergedOS service table (table 2, eax = 0x2000 | n). MergedOS's ntdll
+ * (src/ntrt) implements the NT object model - handles, files, registry,
+ * events - in user space on top of these few descriptor-level services, so
+ * the kernel stays small. They return a value >= 0, or an NTSTATUS error
+ * (negative as a 32-bit number). Paths are absolute UTF-8 VFS paths;
+ * open flags use the native (Linux) O_* values.
+ */
+#define MOS_SVC_OPEN     0x00   /* (path, flags) -> fd                       */
+#define MOS_SVC_CLOSE    0x01   /* (fd)                                      */
+#define MOS_SVC_READ     0x02   /* (fd, buf, len) -> bytes                   */
+#define MOS_SVC_WRITE    0x03   /* (fd, buf, len) -> bytes                   */
+#define MOS_SVC_SEEK     0x04   /* (fd, offset, whence) -> position          */
+#define MOS_SVC_FSTAT    0x05   /* (fd, u64 out[2] = size, kind)             */
+#define MOS_SVC_STAT     0x06   /* (path, u64 out[2])                        */
+#define MOS_SVC_READDIR  0x07   /* (fd, name buf, cap) -> 0 end, 1 file, 2 dir */
+#define MOS_SVC_MKDIR    0x08   /* (path)                                    */
+#define MOS_SVC_UNLINK   0x09   /* (path, is_dir)                            */
+#define MOS_SVC_RENAME   0x0A   /* (from, to)                                */
+#define MOS_SVC_FUTEX    0x0B   /* (addr, op, val, timespec *) Linux futex   */
+#define MOS_SVC_SLEEP    0x0C   /* (nanoseconds)                             */
+#define MOS_SVC_DUP      0x0D   /* (fd) -> new fd                            */
+#define MOS_SVC_GETTID   0x0E   /* () -> thread id                           */
+
+#define MOS_NAME_MAX 256
+
+static long mos_open(struct abi_ctx *x, const struct abi_call *c)
+{
+	return msys_open(x->task, c->arg[0], (u32)c->arg[1]);
+}
+
+static long mos_close(struct abi_ctx *x, const struct abi_call *c)
+{
+	return msys_close(x->task, (int)c->arg[0]);
+}
+
+static long mos_read(struct abi_ctx *x, const struct abi_call *c)
+{
+	return msys_read(x->task, (int)c->arg[0], c->arg[1], c->arg[2]);
+}
+
+static long mos_write(struct abi_ctx *x, const struct abi_call *c)
+{
+	return msys_write(x->task, (int)c->arg[0], c->arg[1], c->arg[2]);
+}
+
+static long mos_seek(struct abi_ctx *x, const struct abi_call *c)
+{
+	return msys_lseek(x->task, (int)c->arg[0], (s64)c->arg[1], (int)c->arg[2]);
+}
+
+static long mos_fstat(struct abi_ctx *x, const struct abi_call *c)
+{
+	u64 out[2] = { 0, 0 };
+	bool tty = false;
+	long kind = msys_fstat(x->task, (int)c->arg[0], &out[0], &tty);
+
+	if (kind < 0)
+		return kind;
+	out[1] = (u64)kind;
+	return uaccess_copy_out(x->task, c->arg[1], out, sizeof(out)) ? -MERR_FAULT : 0;
+}
+
+static long mos_stat(struct abi_ctx *x, const struct abi_call *c)
+{
+	u64 out[2] = { 0, 0 };
+	bool dir = false;
+	long kind = msys_stat(x->task, c->arg[0], &out[0], &dir);
+
+	if (kind < 0)
+		return kind;
+	out[1] = dir ? MSYS_ST_DIR : (u64)kind;
+	return uaccess_copy_out(x->task, c->arg[1], out, sizeof(out)) ? -MERR_FAULT : 0;
+}
+
+static long mos_readdir(struct abi_ctx *x, const struct abi_call *c)
+{
+	char name[MOS_NAME_MAX];
+	bool dir = false;
+	u64 ino = 0;
+	long rc = msys_readdir(x->task, (int)c->arg[0], name, sizeof(name), &dir, &ino);
+	size_t n;
+
+	if (rc <= 0)
+		return rc;
+	n = strlen(name) + 1;
+	if (n > c->arg[2])
+		return -MERR_RANGE;
+	return uaccess_copy_out(x->task, c->arg[1], name, n) ? -MERR_FAULT : 1 + dir;
+}
+
+static long mos_mkdir(struct abi_ctx *x, const struct abi_call *c)
+{
+	return msys_mkdir(x->task, c->arg[0]);
+}
+
+static long mos_unlink(struct abi_ctx *x, const struct abi_call *c)
+{
+	return msys_unlink(x->task, c->arg[0], c->arg[1] != 0);
+}
+
+static long mos_rename(struct abi_ctx *x, const struct abi_call *c)
+{
+	return msys_rename(x->task, c->arg[0], c->arg[1]);
+}
+
+static long mos_futex(struct abi_ctx *x, const struct abi_call *c)
+{
+	return msys_futex(x->task, c->arg[0], (int)c->arg[1], (u32)c->arg[2], c->arg[3]);
+}
+
+static long mos_sleep(struct abi_ctx *x, const struct abi_call *c)
+{
+	return msys_nanosleep(x->task, c->arg[0]);
+}
+
+static long mos_dup(struct abi_ctx *x, const struct abi_call *c)
+{
+	return msys_dup(x->task, (int)c->arg[0], 0, false);
+}
+
+static long mos_gettid(struct abi_ctx *x, const struct abi_call *c)
+{
+	(void)c;
+	return msys_gettid(x->task);
+}
+
+static const struct abi_sysent mos_sysent[] = {
+	[MOS_SVC_OPEN]    = { mos_open,    "MosOpen" },
+	[MOS_SVC_CLOSE]   = { mos_close,   "MosClose" },
+	[MOS_SVC_READ]    = { mos_read,    "MosRead" },
+	[MOS_SVC_WRITE]   = { mos_write,   "MosWrite" },
+	[MOS_SVC_SEEK]    = { mos_seek,    "MosSeek" },
+	[MOS_SVC_FSTAT]   = { mos_fstat,   "MosFstat" },
+	[MOS_SVC_STAT]    = { mos_stat,    "MosStat" },
+	[MOS_SVC_READDIR] = { mos_readdir, "MosReaddir" },
+	[MOS_SVC_MKDIR]   = { mos_mkdir,   "MosMkdir" },
+	[MOS_SVC_UNLINK]  = { mos_unlink,  "MosUnlink" },
+	[MOS_SVC_RENAME]  = { mos_rename,  "MosRename" },
+	[MOS_SVC_FUTEX]   = { mos_futex,   "MosFutex" },
+	[MOS_SVC_SLEEP]   = { mos_sleep,   "MosSleep" },
+	[MOS_SVC_DUP]     = { mos_dup,     "MosDup" },
+	[MOS_SVC_GETTID]  = { mos_gettid,  "MosGettid" },
+};
+
 static void nt_decode(const struct syscall_frame *f, struct abi_call *c)
 {
 	c->nr = f->rax & 0xFFF;
@@ -346,14 +491,18 @@ static const struct abi_sysent *nt_lookup(const struct abi_call *c)
 {
 	if (c->klass == 0 && c->nr < ARRAY_SIZE(nt_sysent) && nt_sysent[c->nr].fn)
 		return &nt_sysent[c->nr];
+	if (c->klass == 2 && c->nr < ARRAY_SIZE(mos_sysent) && mos_sysent[c->nr].fn)
+		return &mos_sysent[c->nr];
 	return NULL;
 }
 
 static void nt_encode(struct syscall_frame *f, const struct abi_call *c, long ret)
 {
-	(void)c;
 	/* NTSTATUS is a signed 32-bit value; sign-extend it like a C return would. */
-	f->rax = (u64)(s64)(s32)abi_ntstatus(ret < 0 ? (int)-ret : 0);
+	if (c->klass == 2 && ret >= 0)
+		f->rax = (u64)ret;              /* MergedOS services return a value */
+	else
+		f->rax = (u64)(s64)(s32)abi_ntstatus(ret < 0 ? (int)-ret : 0);
 }
 
 const struct abi_personality_ops abi_nt_ops = {

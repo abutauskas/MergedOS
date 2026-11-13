@@ -38,6 +38,7 @@ struct pmm_stats {
 	u64 free_frames;
 	u64 kernel_frames;      /* kernel image + boot page tables           */
 	u64 bitmap_frames;      /* allocator metadata                        */
+	u64 module_frames;      /* boot module (user files, not the kernel)  */
 	u64 peak_used_frames;   /* high-water mark of usable - free          */
 };
 

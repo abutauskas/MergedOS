@@ -328,7 +328,7 @@ int task_load_image(struct task *t, const u8 *image, size_t len, const struct ex
 	if (!rc)
 		rc = build_stack(t, &plan, args, start);
 	if (!rc && nt_dynamic)
-		rc = ntload_link(t, image, len, &plan, delta, start);
+		rc = ntload_link(t, image, len, &plan, delta, args, start);
 	if (rc) {
 		vmm_as_destroy(t->pml4);
 		t->pml4 = 0;

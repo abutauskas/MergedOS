@@ -8,7 +8,7 @@
  * files - GetModuleHandle / LoadLibrary hand out a pseudo handle for any
  * module name the runtime stands in for.
  */
-#include "src/ntrt/rt.h"
+#include "src/ntrt/nt.h"
 
 #define CURRENT_PROCESS (~0ull)
 #define STD_INPUT_HANDLE  ((u32)-10)
@@ -352,7 +352,6 @@ static void set_ustr(u8 *at, const wchar *s)
 void ntrt_start(struct ntrt_params *p) __attribute__((noreturn, used));
 void ntrt_start(struct ntrt_params *p)
 {
-	u32 rc;
 
 	rt_params = p;
 	FIELD(teb, TEB_STACK_BASE, u64) = p->stack_base;
@@ -386,9 +385,14 @@ void ntrt_start(struct ntrt_params *p)
 	set_ustr(proc_params + 0x60, image_path_w);
 	set_ustr(proc_params + 0x70, cmdline_w);
 
-	tls_init(p->image_base);
-	rc = ((API u32 (*)(void *))p->entry)(peb);
-	rt_exit(rc);            /* like RtlUserThreadStart: return value = exit code */
+	/* TEB.StaticUnicodeString over StaticUnicodeBuffer: Wine's ANSI wrappers convert in it. */
+	FIELD(teb, 0x1258 + 2, u16) = 522;
+	FIELD(teb, 0x1258 + 8, u64) = (u64)(teb + 0x268);
+	nt_peb = peb;
+	ldr_init();
+	nt_init_process();
+	nt_sync_init();
+	ldr_process_start();   /* binds imports, runs DllMains, calls the entry point */
 }
 
 /* Bound by the loader to every import nobody implements. */

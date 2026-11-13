@@ -93,9 +93,12 @@ void system_mem_report(void)
 		(unsigned long long)(__bss_end - __bss_start) / 1024);
 	kprintf("[mem] kernel footprint: %llu KiB resident (image + boot tables %llu KiB, "
 		"frame bitmap %llu KiB), peak %llu KiB\n",
-		(unsigned long long)(st.usable_frames - st.free_frames) * 4,
+		(unsigned long long)(st.usable_frames - st.free_frames - st.module_frames) * 4,
 		(unsigned long long)image / 1024, (unsigned long long)st.bitmap_frames * 4,
 		(unsigned long long)st.peak_used_frames * 4);
+	if (st.module_frames)
+		kprintf("[mem] boot module (user files, not counted above): %llu KiB\n",
+			(unsigned long long)st.module_frames * 4);
 	kprintf("[mem] RAM: %llu KiB usable, %llu KiB free (%llu%% of the machine is free)\n",
 		(unsigned long long)st.usable_frames * 4, (unsigned long long)st.free_frames * 4,
 		(unsigned long long)(st.free_frames * 100 / st.usable_frames));
@@ -168,11 +171,19 @@ static int abi_boot_check(void)
 	 * MinGW-w64 C runtime; the Wine builtins are only in the ramdisk when the
 	 * image was built with WINE_EXE_DIR (see Makefile).
 	 */
+	pmm_get_stats(&after);
+	if (after.free_frames != before.free_frames) {
+		kprintf("[abi] FAILED: %lld frames leaked by exec/exit\n",
+			(long long)(before.free_frames - after.free_frames));
+		failures++;
+	}
 	{
+		bool warm = false;
+
 		static const struct {
 			const char *path, *expect, *missing_note;
 		} nt_progs[] = {
-			{ "bin/win_hello.exe", "windows 10.0.22631", "built without MinGW-w64" },
+			{ "bin/win_hello.exe", "RtlGetVersion 10.0.22631", "built without MinGW-w64" },
 			{ "bin/wine/hostname.exe", "MERGEDOS", NULL },
 			{ "bin/wine/whoami.exe", "MERGEDOS\\user", NULL },
 		};
@@ -198,6 +209,14 @@ static int abi_boot_check(void)
 				abi_personality_name(rep.personality), (unsigned long long)rep.syscalls,
 				rep.pages, rc ? rc : rep.exit_code, ok ? "OK" : "FAILED");
 			failures += !ok;
+			/*
+			 * The first NT program leaves state in the ramfs (the registry
+			 * hive under /tmp/.reg, user files): re-baseline once it ran.
+			 */
+			if (!warm) {
+				warm = true;
+				pmm_get_stats(&before);
+			}
 		}
 	}
 	/* Several processes at once: fork, exec, wait, pipes, threads, signals, ramfs. */

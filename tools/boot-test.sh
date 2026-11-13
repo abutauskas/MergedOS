@@ -19,9 +19,12 @@ trap 'rm -f "$LOG"' EXIT
 status=0
 
 for mem in "$@"; do
+	# Wine's DLLs (make wine), when present, go in as a Multiboot module.
+	modarg=
+	[ -n "${WINE_TAR:-}" ] && [ -f "$WINE_TAR" ] && modarg="-initrd $WINE_TAR"
 	timeout "$TIMEOUT" "$QEMU" -m "$mem" -no-reboot -display none -serial stdio \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-		-kernel "$KERNEL" -append "selftest" >"$LOG" 2>&1
+		-kernel "$KERNEL" $modarg -append "selftest" >"$LOG" 2>&1
 	rc=$?
 	if [ "$rc" -eq 33 ] && grep -q '^MERGEDOS-SELFTEST: PASS' "$LOG"; then
 		footprint=$(sed -n 's/.*kernel footprint: \([0-9]* KiB\).*/\1/p' "$LOG" | tail -n 1)

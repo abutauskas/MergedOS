@@ -1,19 +1,17 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 /*
- * NT loader: what ntdll's LdrInitializeThunk and the kernel's image mapper
- * do together on Windows, reduced to one static image plus one built-in
- * runtime.
+ * NT loader, kernel half: what the kernel's image mapper does on Windows,
+ * for the program image plus MergedOS's ntdll (the built-in runtime).
  *
  *   1. place  - keep the preferred base, unless the image asks for ASLR or
  *               collides with the runtime area; then rebase it
  *   2. relocate - walk .reloc and adjust every DIR64 word
  *   3. map the built-in Win32 runtime (src/ntrt, embedded flat binary)
- *   4. bind  - fill each IAT slot with the runtime's implementation, or with
- *              a stub that reports "missing import DLL!Name" and exits with
- *              STATUS_ENTRYPOINT_NOT_FOUND when called
- *   5. hand the runtime its parameters page and a KUSER_SHARED_DATA page
+ *   4. hand the runtime (MergedOS's ntdll) its parameters page and a
+ *      KUSER_SHARED_DATA page; the runtime's own loader (src/ntrt/ldr.c)
+ *      binds the imports, loading DLL files from disk where they exist
  *
- * No DLL files are read from disk: every supported DLL is the runtime.
+ * Everything else a Windows loader does happens in user space.
  */
 #include <mergedos/kernel.h>
 #include <mergedos/compat.h>
@@ -29,7 +27,6 @@ extern const u8 ntrt_blob_start[], ntrt_blob_end[];
 #define NT_FIXED_HI  (NTRT_KUSER_VA + 2 * PAGE_SIZE)    /* KUSER + exit thunk */
 
 static void put32(u8 *p, u32 v) { memcpy(p, &v, 4); }     /* x86: little-endian */
-static void put64(u8 *p, u64 v) { memcpy(p, &v, 8); }
 
 static bool overlaps(u64 a, u64 alen, u64 b, u64 blen)
 {
@@ -110,130 +107,34 @@ static int apply_reloc(u32 rva, void *arg)
 	return as_write(c->t, va, &v, 8);
 }
 
-/* DLL names the runtime answers for, without the ".dll" suffix. */
-static bool runtime_dll(const char *dll)
+/* NT command line from argv: words joined by spaces, quoted when they hold one. */
+static void nt_cmdline(char *out, size_t cap, const struct exec_args *args)
 {
-	static const char *const names[] = {
-		"kernel32", "kernelbase", "ntdll", "msvcrt", "ucrtbase", "advapi32", "secur32",
-	};
-	char base[24];
+	const char *s = args->buf;
 	size_t n = 0;
 
-	while (dll[n] && dll[n] != '.' && n < sizeof(base) - 1) {
-		base[n] = (char)mos_tolower((u8)dll[n]);
-		n++;
+	for (u32 i = 0; i < args->argc && n + 4 < cap; i++) {
+		bool q = !*s || strchr(s, ' ');
+
+		if (i)
+			out[n++] = ' ';
+		if (q)
+			out[n++] = '"';
+		for (; *s && n + 2 < cap; s++)
+			out[n++] = *s;
+		if (q)
+			out[n++] = '"';
+		s += strlen(s) + 1;
 	}
-	base[n] = '\0';
-	if (dll[n] && mos_strcasecmp(dll + n, ".dll"))
-		return false;
-	if (!strncmp(base, "api-ms-win-", 11))
-		return true;            /* API sets: thin forwarders on Windows too */
-	for (size_t i = 0; i < ARRAY_SIZE(names); i++)
-		if (!strcmp(base, names[i]))
-			return true;
-	return false;
-}
-
-struct bind_ctx {
-	struct task *t;
-	const struct exec_plan *plan;
-	const struct ntrt_header *hdr;
-	u32 bound, missing;
-	u64 stub_next;
-};
-
-/* Find `name` in the runtime's export table (read from the kernel's copy). */
-static u64 runtime_lookup(const struct ntrt_header *hdr, const char *name)
-{
-	const u64 blob_len = (u64)(ntrt_blob_end - ntrt_blob_start);
-	const struct ntrt_export *e = (const void *)(ntrt_blob_start + (hdr->exports - NTRT_BASE));
-	const struct ntrt_export *end = (const void *)(ntrt_blob_start + (hdr->exports_end - NTRT_BASE));
-
-	for (; e < end; e++) {
-		u64 off = e->name - NTRT_BASE;
-
-		if (off < blob_len && !strncmp((const char *)ntrt_blob_start + off, name,
-					       blob_len - off))
-			return e->addr;
-	}
-	return 0;
-}
-
-/*
- * A stub for an unresolved import:
- *   lea  rcx, [rip + name]     ; 48 8D 0D <rel32>
- *   jmp  [rip + 0]             ; FF 25 00 00 00 00
- *   dq   runtime missing()
- *   db   "DLL!Name", 0
- */
-static int make_stub(struct bind_ctx *c, const char *dll, const char *name, u16 ord, u64 *addr)
-{
-	u8 code[21 + 96];
-	char *text = (char *)code + 21;
-	size_t n;
-
-	if (c->stub_next == 0) {
-		int rc = task_map_range(c->t, NTRT_STUB_VA, NTRT_STUB_PAGES * PAGE_SIZE,
-					VMM_R | VMM_X);
-
-		if (rc)
-			return rc;
-		c->stub_next = NTRT_STUB_VA;
-	}
-	n = mos_strlcpy(text, dll, 48);
-	text[MOS_MIN(n, 47)] = '!';
-	if (name) {
-		mos_strlcpy(text + MOS_MIN(n, 47) + 1, name, 96 - 48);
-	} else {
-		char *p = text + MOS_MIN(n, 47) + 1;
-
-		*p++ = '#';
-		for (u32 div = 10000; div; div /= 10)
-			if (ord >= div || div == 1)
-				*p++ = (char)('0' + ord / div % 10);
-		*p = '\0';
-	}
-	n = 21 + strlen(text) + 1;
-	if (c->stub_next + n > NTRT_STUB_VA + NTRT_STUB_PAGES * PAGE_SIZE)
-		return -MERR_RANGE;
-	code[0] = 0x48; code[1] = 0x8D; code[2] = 0x0D;
-	put32(code + 3, 14);                   /* from the end of lea to the text */
-	code[7] = 0xFF; code[8] = 0x25;
-	put32(code + 9, 0);
-	put64(code + 13, c->hdr->missing);
-	*addr = c->stub_next;
-	c->stub_next = ALIGN_UP(c->stub_next + n, 16);
-	return as_write(c->t, *addr, code, n);
-}
-
-static int bind_import(const char *dll, const char *name, u16 ord, u32 iat_rva, void *arg)
-{
-	struct bind_ctx *c = arg;
-	u64 addr = 0;
-	int rc;
-
-	if ((u64)iat_rva + 8 > c->plan->image_size)
-		return -MERR_NOEXEC;
-	if (name && runtime_dll(dll))
-		addr = runtime_lookup(c->hdr, name);
-	if (addr) {
-		c->bound++;
-	} else {
-		rc = make_stub(c, dll, name, ord, &addr);
-		if (rc)
-			return rc;
-		c->missing++;
-	}
-	return as_write(c->t, c->plan->image_base + iat_rva, &addr, 8);
+	out[MOS_MIN(n, cap - 1)] = '\0';
 }
 
 int ntload_link(struct task *t, const u8 *image, size_t len, const struct exec_plan *plan,
-		u64 delta, struct user_start *start)
+		u64 delta, const struct exec_args *args, struct user_start *start)
 {
 	const struct ntrt_header *hdr = (const void *)ntrt_blob_start;
 	const u64 blob_len = (u64)(ntrt_blob_end - ntrt_blob_start);
 	const struct abi_identity *id = abi_identity(ABI_NT);
-	struct bind_ctx bc = { .t = t, .plan = plan, .hdr = hdr };
 	struct ntrt_params params = { 0 };
 	u8 kuser[0x280] = { 0 };
 	int rc;
@@ -261,13 +162,7 @@ int ntload_link(struct task *t, const u8 *image, size_t len, const struct exec_p
 	if (rc)
 		return rc;
 
-	/* 4. Imports. */
-	rc = binfmt_pe_imports(image, len, bind_import, &bc);
-	if (rc)
-		return rc;
-	kprintf("[nt] %s: %u imports bound to the built-in runtime, %u missing%s\n", t->name,
-		bc.bound, bc.missing, delta ? ", image rebased" : "");
-
+	/* 4. Imports are bound by the runtime's own loader (src/ntrt/ldr.c). */
 	/* 5. Parameters and the version fields of KUSER_SHARED_DATA. */
 	params.image_base = plan->image_base;
 	params.entry = plan->entry;
@@ -276,7 +171,9 @@ int ntload_link(struct task *t, const u8 *image, size_t len, const struct exec_p
 	params.pid = (u32)t->pid * 4;           /* NT ids are multiples of four */
 	params.tid = (u32)t->pid * 4 + 4;
 	mos_strlcpy(params.computer_name, id->nodename, sizeof(params.computer_name));
-	mos_strlcpy(params.command_line, t->name, sizeof(params.command_line));
+	mos_strlcpy(params.image_path, t->name, sizeof(params.image_path));
+	nt_cmdline(params.command_line, sizeof(params.command_line), args);
+	params.image_size = plan->image_size;
 	put32(kuser + KUSER_NT_BUILD_NUMBER, id->build);
 	put32(kuser + KUSER_NT_PRODUCT_TYPE, 1);       /* NtProductWinNt */
 	kuser[KUSER_PRODUCT_VALID] = 1;

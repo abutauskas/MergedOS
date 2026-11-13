@@ -34,6 +34,16 @@ void boot_info_init(u32 magic, u64 mbi_phys)
 	if (mbi->flags & MB1_INFO_LOADER_NAME)
 		copy_phys_string(info.loader, sizeof(info.loader), mbi->boot_loader_name);
 
+	/* The first boot module, if any: a ustar archive of extra files (Wine's DLLs). */
+	if ((mbi->flags & MB1_INFO_MODS) && mbi->mods_count) {
+		const u32 *mod = phys_to_virt(mbi->mods_addr);
+
+		if (mod[1] > mod[0]) {
+			info.mod_start = mod[0];
+			info.mod_end = mod[1];
+		}
+	}
+
 	if (!(mbi->flags & MB1_INFO_MMAP))
 		panic("boot loader did not provide a memory map");
 
