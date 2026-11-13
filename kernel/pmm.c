@@ -6,8 +6,9 @@
  * (2 KiB for a 64 MiB machine, 128 KiB for 4 GiB) and is sized from the
  * firmware memory map at boot, so a small machine pays for a small map.
  *
- * PoC limit: only frames below DMAP_LIMIT (4 GiB) are managed, because that
- * is what the boot-time direct map covers.
+ * The boot page tables map physical 0..4 GiB at DMAP_BASE; RAM above that
+ * is added to the direct map here, with 2 MiB pages, before any of it can
+ * be handed out (up to DMAP_RAM_MAX, one PML4 slot).
  */
 #include <mergedos/kernel.h>
 #include <mergedos/io.h>
@@ -19,6 +20,7 @@ static u8 *bitmap;                      /* bit set = frame in use / not RAM */
 static u64 nframes;
 static u64 next_hint;
 static struct pmm_stats stats;
+u64 dmap_top = DMAP_LIMIT;
 
 static inline bool frame_used(u64 f)   { return bitmap[f >> 3] & (1u << (f & 7)); }
 static inline void frame_set(u64 f)    { bitmap[f >> 3] |= (u8)(1u << (f & 7)); }
@@ -36,6 +38,42 @@ static void reserve_range(u64 start, u64 end, u64 *counter)
 	}
 }
 
+/*
+ * Map RAM above 4 GiB into the direct map: one page directory (512 x 2 MiB)
+ * per GiB, hung off the direct map's PDPT, which every address space shares.
+ * The directories come from low memory, which is already mapped.
+ */
+static void dmap_extend(u64 top)
+{
+	u64 *pml4 = phys_to_virt(read_cr3() & ~0xFFFULL);
+	u64 *pdpt = phys_to_virt(pml4[DMAP_BASE >> 39 & 0x1FF] & 0x000FFFFFFFFFF000ULL);
+
+	for (u64 gib = DMAP_LIMIT >> 30; gib < (top + (1ULL << 30) - 1) >> 30; gib++) {
+		u64 pd_phys = pmm_alloc(), *pd;
+
+		if (!pd_phys)
+			panic("no memory for the direct map above 4 GiB");
+		stats.kernel_frames++;
+		pd = phys_to_virt(pd_phys);
+		for (u64 i = 0; i < 512; i++)
+			pd[i] = (gib << 30 | i << 21) | 0x83;  /* present, writable, 2 MiB */
+		pdpt[gib] = pd_phys | 0x3;
+	}
+	dmap_top = MOS_MAX(top, DMAP_LIMIT);
+	if (top > DMAP_LIMIT) {
+		/* Prove the new mapping: the very last frame of RAM is reachable. */
+		volatile u64 *last = phys_to_virt(top - 8);
+		u64 old = *last;
+
+		*last = 0x4D45524745444F53ULL;
+		if (*last != 0x4D45524745444F53ULL)
+			panic("direct map above 4 GiB does not work");
+		*last = old;
+		kprintf("[mem] direct map extended to %llu MiB of RAM\n",
+			(unsigned long long)(top >> 20));
+	}
+}
+
 void pmm_init(const struct boot_info *bi)
 {
 	u64 kernel_start = (u64)__kernel_start - KERNEL_VMA;
@@ -48,8 +86,8 @@ void pmm_init(const struct boot_info *bi)
 		if (bi->mmap[i].type == BOOT_MEM_AVAILABLE && end > top)
 			top = end;
 	}
-	if (top > DMAP_LIMIT)
-		top = DMAP_LIMIT;
+	if (top > DMAP_RAM_MAX)
+		top = DMAP_RAM_MAX;
 	top = ALIGN_DOWN(top, PAGE_SIZE);
 
 	nframes = top >> PAGE_SHIFT;
@@ -83,6 +121,7 @@ void pmm_init(const struct boot_info *bi)
 	reserve_range(bitmap_phys, bitmap_phys + bitmap_bytes, &stats.bitmap_frames);
 
 	next_hint = (bitmap_phys + bitmap_bytes) >> PAGE_SHIFT;
+	dmap_extend(top);
 	stats.peak_used_frames = stats.usable_frames - stats.free_frames;
 }
 
