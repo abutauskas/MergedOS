@@ -169,6 +169,7 @@ int main(void)
 		{ "desktop window manager (4 layouts, z-order, tiling, clip)", test_desktop },
 		{ "mergedfence + .merged (format, rules, matching)", test_fence },
 		{ "file types + viewers (identify, PNG/BMP, zip/tar, fuzz)", test_filetype },
+		{ "ramfs + process system calls (Linux / FreeBSD routing)", test_ramfs },
 	};
 
 	for (size_t i = 0; i < ARRAY_SIZE(suites); i++) {

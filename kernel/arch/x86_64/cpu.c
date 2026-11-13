@@ -42,7 +42,6 @@ struct idt_gate {
 extern void gdt_load(const struct desc_ptr *gdtr);
 extern void syscall_entry(void);
 extern const u64 isr_stub_table[48];
-extern u8 ring0_stack_top[];
 
 /*
  * Segment order is dictated by SYSCALL/SYSRET: STAR[47:32] selects kernel
@@ -66,6 +65,11 @@ bool cpu_nx_enabled(void)
 	return nx_enabled;
 }
 
+void cpu_set_rsp0(u64 top)
+{
+	tss.rsp[0] = top;
+}
+
 static void idt_set_gate(unsigned vec, u64 handler)
 {
 	idt[vec].offset_lo  = (u16)handler;
@@ -84,8 +88,8 @@ void cpu_init(void)
 	u64 efer;
 	u32 a, b, c, d;
 
-	/* Ring 3 -> ring 0 transitions (exceptions) land on the ring-0 stack. */
-	tss.rsp[0] = (u64)ring0_stack_top;
+	/* Ring 3 -> ring 0 transitions land on the running thread's kernel stack:
+	 * the scheduler sets tss.rsp[0] before any user thread runs. */
 	tss.iomap_base = sizeof(tss);
 
 	gdt[5] = (sizeof(tss) - 1)

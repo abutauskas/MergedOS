@@ -26,6 +26,10 @@ int    strcmp(const char *a, const char *b);
 int    strncmp(const char *a, const char *b, size_t n);
 char  *strchr(const char *s, int c);
 
+/* kmalloc.c: zeroed memory; objects up to 1 KiB share pages, larger ones get frames */
+void *kzalloc(size_t size);
+void  kfree(void *p);
+
 /* time.c */
 void time_delay_ms(u32 ms);
 

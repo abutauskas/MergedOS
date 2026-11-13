@@ -2,34 +2,92 @@
 #include <mergedos/kernel.h>
 #include <mergedos/initrd.h>
 #include <mergedos/io.h>
+#include <mergedos/mm.h>
 #include <mergedos/sched.h>
 #include <mergedos/task.h>
-
-enum thread_state { T_FREE = 0, T_READY, T_RUNNING, T_SLEEPING, T_DEAD };
-
-struct thread {
-	u64 *rsp;                       /* saved stack pointer while not running */
-	enum thread_state state;
-	const char *name;
-	void (*fn)(void *);
-	void *arg;
-	u64 wake_tick, run_ticks;
-	int id;
-};
 
 #define IDLE_ID 1
 
 extern void switch_context(u64 **save_rsp, u64 *load_rsp);
+extern void user_thread_start(void);
+extern u64 syscall_kernel_rsp;
+void sched_thread_begin(void);
 
 static struct thread threads[SCHED_MAX_THREADS];
-/* Thread 0 keeps the boot stack; the others get one of these. */
-static u8 stacks[SCHED_MAX_THREADS - 1][THREAD_STACK_SIZE] __attribute__((aligned(16)));
 static struct thread *cur;
 static volatile u64 ticks;
+static bool reap_pending;
 
 u64 time_ticks(void)
 {
 	return ticks;
+}
+
+struct thread *thread_current(void)
+{
+	return cur;
+}
+
+struct thread *thread_slot(int id)
+{
+	return id >= 0 && id < SCHED_MAX_THREADS ? &threads[id] : NULL;
+}
+
+void fpu_save(u8 *fx)
+{
+	__asm__ volatile("fxsave64 (%0)" : : "r"(fx) : "memory");
+}
+
+void fpu_restore(const u8 *fx)
+{
+	__asm__ volatile("fxrstor64 (%0)" : : "r"(fx) : "memory");
+}
+
+void fpu_init_state(u8 *fx)
+{
+	memset(fx, 0, 512);
+	fx[0] = 0x7F;                           /* FCW 0x037F: x87 exceptions masked */
+	fx[1] = 0x03;
+	fx[24] = 0x80;                          /* MXCSR 0x1F80: SSE exceptions masked */
+	fx[25] = 0x1F;
+}
+
+/* Load what the next thread runs on: address space, TLS bases, ring-0 stack, FPU. */
+static void switch_mm(struct thread *next)
+{
+	u64 want = next->proc ? task_pml4(next->proc) : vmm_kernel_pml4();
+
+	if ((read_cr3() & ~0xFFFULL) != want)
+		vmm_switch(want);
+	if (!next->proc)
+		return;
+	wrmsr(0xC0000100, next->fs_base);
+	wrmsr(0xC0000101, next->gs_base);
+	syscall_kernel_rsp = (u64)KSTACK_TOP(next);
+	cpu_set_rsp0((u64)KSTACK_TOP(next));
+	fpu_restore(KSTACK_FX(next));
+}
+
+/*
+ * Runs on the new thread right after every switch: free what dead threads
+ * left behind. A thread can never free the stack it is running on, so this
+ * is always somebody else's job.
+ */
+static void finish_switch(void)
+{
+	if (!reap_pending)
+		return;
+	reap_pending = false;
+	for (int i = 1; i < SCHED_MAX_THREADS; i++) {
+		struct thread *t = &threads[i];
+
+		if (t->state != T_DEAD || t == cur || !t->stack)
+			continue;
+		pmm_free_contig((u64)t->stack - DMAP_BASE, KSTACK_SIZE / PAGE_SIZE);
+		t->stack = NULL;
+		t->state = T_FREE;
+	}
+	task_deferred_cleanup();
 }
 
 /* Pick the next runnable thread and switch to it. Interrupts must be off. */
@@ -40,7 +98,7 @@ static void schedule(void)
 	for (int i = 1; i <= SCHED_MAX_THREADS && !next; i++) {
 		struct thread *t = &threads[(prev->id + i) % SCHED_MAX_THREADS];
 
-		if (t->state == T_SLEEPING && ticks >= t->wake_tick)
+		if (t->state == T_BLOCKED && t->wake_tick && ticks >= t->wake_tick)
 			t->state = T_READY;
 		if (t->state == T_READY && t->id != IDLE_ID)
 			next = t;
@@ -53,8 +111,14 @@ static void schedule(void)
 	if (prev->state == T_RUNNING)
 		prev->state = T_READY;
 	next->state = T_RUNNING;
+	if (next == prev)
+		return;
+	if (prev->proc && prev->state != T_DEAD)
+		fpu_save(KSTACK_FX(prev));
 	cur = next;
+	switch_mm(next);
 	switch_context(&prev->rsp, next->rsp);
+	finish_switch();
 }
 
 void sched_tick(void)
@@ -68,9 +132,16 @@ void sched_tick(void)
 
 static void thread_entry(void)
 {
+	finish_switch();
 	irq_enable();                           /* a new thread starts inside schedule() */
 	cur->fn(cur->arg);
 	thread_exit();
+}
+
+/* First C code of a new user thread, on its way to IRET into ring 3. */
+void sched_thread_begin(void)
+{
+	finish_switch();
 }
 
 static void idle(void *arg)
@@ -80,17 +151,33 @@ static void idle(void *arg)
 		cpu_halt();                     /* sleep until the next interrupt */
 }
 
+static struct thread *alloc_thread(void)
+{
+	for (int i = 1; i < SCHED_MAX_THREADS; i++) {
+		struct thread *t = &threads[i];
+
+		if (t->state == T_FREE) {
+			u64 phys = pmm_alloc_contig(KSTACK_SIZE / PAGE_SIZE);
+
+			if (!phys)
+				return NULL;
+			memset(t, 0, sizeof(*t));
+			t->id = i;
+			t->stack = phys_to_virt(phys);
+			return t;
+		}
+	}
+	return NULL;
+}
+
 int thread_create(void (*fn)(void *), void *arg, const char *name)
 {
 	u64 flags = irq_save();
+	struct thread *t = alloc_thread();
 	int id = -1;
 
-	for (int i = 1; i < SCHED_MAX_THREADS && id < 0; i++)
-		if (threads[i].state == T_FREE || (threads[i].state == T_DEAD && &threads[i] != cur))
-			id = i;
-	if (id > 0) {
-		struct thread *t = &threads[id];
-		u64 *sp = (u64 *)(stacks[id - 1] + THREAD_STACK_SIZE);
+	if (t) {
+		u64 *sp = (u64 *)KSTACK_TOP(t);
 
 		/* What switch_context() pops: six callee-saved registers, then a return
 		 * address. The spare slot keeps the stack aligned as after a CALL. */
@@ -98,11 +185,44 @@ int thread_create(void (*fn)(void *), void *arg, const char *name)
 		*--sp = (u64)thread_entry;
 		for (int r = 0; r < 6; r++)
 			*--sp = 0;
-		*t = (struct thread){ .rsp = sp, .state = T_READY, .name = name, .fn = fn,
-				      .arg = arg, .id = id };
+		t->rsp = sp;
+		t->name = name;
+		t->fn = fn;
+		t->arg = arg;
+		t->state = T_READY;
+		id = t->id;
 	}
 	irq_restore(flags);
 	return id;
+}
+
+struct thread *thread_create_user(struct task *proc, const struct trap_frame *regs, const u8 *fx)
+{
+	u64 flags = irq_save();
+	struct thread *t = alloc_thread();
+
+	if (t) {
+		struct trap_frame *tf = (struct trap_frame *)(KSTACK_TOP(t) - sizeof(*tf));
+		u64 *sp = (u64 *)tf;
+
+		*tf = *regs;
+		tf->cs = USER_CS;
+		tf->ss = USER_DS;
+		tf->rflags = (tf->rflags & 0xCD5) | 0x202;   /* user flags only, IF on */
+		*--sp = (u64)user_thread_start;
+		for (int r = 0; r < 6; r++)
+			*--sp = 0;
+		t->rsp = sp;
+		t->proc = proc;
+		t->name = task_name(proc);
+		if (fx)
+			memcpy(KSTACK_FX(t), fx, 512);
+		else
+			fpu_init_state(KSTACK_FX(t));
+		t->state = T_READY;
+	}
+	irq_restore(flags);
+	return t;
 }
 
 void sched_init(void)
@@ -126,24 +246,77 @@ void thread_yield(void)
 	irq_restore(flags);
 }
 
-void thread_sleep_ms(u32 ms)
+bool thread_block(const void *chan, u64 aux, u64 timeout)
 {
 	u64 flags;
+	bool woken;
 
 	if (!cur)                               /* before sched_init(): nothing to wait for */
-		return;
+		return false;
 	flags = irq_save();
-
-	cur->wake_tick = ticks + (u64)ms * SCHED_HZ / 1000 + 1;
-	cur->state = T_SLEEPING;
+	cur->chan = chan;
+	cur->chan_aux = aux;
+	cur->woken = false;
+	cur->wake_tick = timeout ? ticks + timeout : 0;
+	cur->state = T_BLOCKED;
 	schedule();
+	woken = cur->woken;
+	cur->chan = NULL;
 	irq_restore(flags);
+	return woken;
+}
+
+int thread_wake(const void *chan, u64 aux, int max)
+{
+	u64 flags = irq_save();
+	int n = 0;
+
+	for (int i = 0; i < SCHED_MAX_THREADS && n < max; i++) {
+		struct thread *t = &threads[i];
+
+		if (t->state == T_BLOCKED && t->chan == chan && t->chan_aux == aux) {
+			t->state = T_READY;
+			t->woken = true;
+			n++;
+		}
+	}
+	irq_restore(flags);
+	return n;
+}
+
+void thread_wake_proc(struct task *proc)
+{
+	u64 flags = irq_save();
+
+	for (int i = 0; i < SCHED_MAX_THREADS; i++)
+		if (threads[i].state == T_BLOCKED && threads[i].proc == proc) {
+			threads[i].state = T_READY;
+			threads[i].woken = true;
+		}
+	irq_restore(flags);
+}
+
+void thread_kill(struct thread *t)
+{
+	u64 flags = irq_save();
+
+	if (t != cur && t->state != T_FREE && t->state != T_DEAD) {
+		t->state = T_DEAD;
+		reap_pending = true;
+	}
+	irq_restore(flags);
+}
+
+void thread_sleep_ms(u32 ms)
+{
+	thread_block(NULL, 0, (u64)ms * SCHED_HZ / 1000 + 1);
 }
 
 void thread_exit(void)
 {
 	(void)irq_save();
 	cur->state = T_DEAD;
+	reap_pending = true;
 	schedule();
 	for (;;)
 		cpu_halt();
@@ -151,12 +324,12 @@ void thread_exit(void)
 
 void sched_print(void)
 {
-	static const char *const states[] = { "free", "ready", "running", "sleeping", "dead" };
+	static const char *const states[] = { "free", "ready", "running", "blocked", "dead" };
 
 	kprintf("  uptime %llu.%02llu s, timer %u Hz\n", (unsigned long long)(ticks / SCHED_HZ),
 		(unsigned long long)(ticks % SCHED_HZ), SCHED_HZ);
 	for (int i = 0; i < SCHED_MAX_THREADS; i++)
-		if (threads[i].state != T_FREE)
+		if (threads[i].state != T_FREE && threads[i].state != T_DEAD)
 			kprintf("  thread %d  %-8s %-8s %llu ticks\n", i, threads[i].name,
 				states[threads[i].state], (unsigned long long)threads[i].run_ticks);
 }

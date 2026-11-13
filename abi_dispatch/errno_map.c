@@ -24,6 +24,16 @@ static const u8 linux_errno[MERR_MAX] = {
 	[MERR_AGAIN]  = 11,     /* EAGAIN      */
 	[MERR_RANGE]  = 7,      /* E2BIG       */
 	[MERR_NOTTY]  = 25,     /* ENOTTY      */
+	[MERR_NOTDIR] = 20,     /* ENOTDIR     */
+	[MERR_ISDIR]  = 21,     /* EISDIR      */
+	[MERR_EXIST]  = 17,     /* EEXIST      */
+	[MERR_NOTEMPTY] = 39,   /* ENOTEMPTY   */
+	[MERR_CHILD]  = 10,     /* ECHILD      */
+	[MERR_INTR]   = 4,      /* EINTR       */
+	[MERR_PIPE]   = 32,     /* EPIPE       */
+	[MERR_SRCH]   = 3,      /* ESRCH       */
+	[MERR_TIMEDOUT] = 110,  /* ETIMEDOUT   */
+	[MERR_MFILE]  = 24,     /* EMFILE      */
 };
 
 static const u8 bsd_errno[MERR_MAX] = {
@@ -41,6 +51,16 @@ static const u8 bsd_errno[MERR_MAX] = {
 	[MERR_AGAIN]  = 35,     /* EAGAIN      */
 	[MERR_RANGE]  = 7,
 	[MERR_NOTTY]  = 25,
+	[MERR_NOTDIR] = 20,
+	[MERR_ISDIR]  = 21,
+	[MERR_EXIST]  = 17,
+	[MERR_NOTEMPTY] = 66,   /* ENOTEMPTY   */
+	[MERR_CHILD]  = 10,
+	[MERR_INTR]   = 4,
+	[MERR_PIPE]   = 32,
+	[MERR_SRCH]   = 3,
+	[MERR_TIMEDOUT] = 60,   /* ETIMEDOUT   */
+	[MERR_MFILE]  = 24,
 };
 
 static const u32 nt_status[MERR_MAX] = {
@@ -58,6 +78,14 @@ static const u32 nt_status[MERR_MAX] = {
 	[MERR_AGAIN]  = NT_STATUS_RETRY,
 	[MERR_RANGE]  = NT_STATUS_BUFFER_OVERFLOW,
 	[MERR_NOTTY]  = NT_STATUS_INVALID_PARAMETER,
+	[MERR_NOTDIR] = 0xC0000103u,            /* STATUS_NOT_A_DIRECTORY       */
+	[MERR_ISDIR]  = 0xC00000BAu,            /* STATUS_FILE_IS_A_DIRECTORY   */
+	[MERR_EXIST]  = 0xC0000035u,            /* STATUS_OBJECT_NAME_COLLISION */
+	[MERR_NOTEMPTY] = 0xC0000101u,          /* STATUS_DIRECTORY_NOT_EMPTY   */
+	[MERR_PIPE]   = 0xC000014Bu,            /* STATUS_PIPE_BROKEN           */
+	[MERR_SRCH]   = 0xC000000Bu,            /* STATUS_INVALID_CID           */
+	[MERR_TIMEDOUT] = 0x00000102u,          /* STATUS_TIMEOUT               */
+	[MERR_MFILE]  = 0xC000011Fu,            /* STATUS_TOO_MANY_OPENED_FILES */
 };
 
 int abi_errno_linux(int merr)

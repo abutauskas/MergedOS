@@ -4,15 +4,16 @@
  *   - gdt_load:          install the runtime GDT and reload segment registers
  *   - isr_stub_N:        CPU exception entry (vectors 0..31)
  *   - syscall_entry:     SYSCALL target shared by *all* ABI personalities
- *   - user_enter / user_exit_resume: enter ring 3 and unwind back out of it
+ *   - user_thread_start / ret_to_user: enter ring 3 through IRET
  *
  * Linux, FreeBSD, XNU and NT x86-64 binaries all enter the kernel with the
  * same instruction (SYSCALL); they differ only in what the registers mean.
  * This file therefore saves a single, ABI-neutral register frame and leaves
  * interpretation to abi_dispatch/.
  *
- * Uniprocessor PoC: the kernel-stack pointer for SYSCALL lives in a global.
- * The SMP milestone moves it behind %gs (swapgs) as a per-CPU variable.
+ * Uniprocessor: the kernel-stack pointer for SYSCALL lives in a global that
+ * the scheduler points at the running thread's stack. The SMP milestone
+ * moves it behind %gs (swapgs) as a per-CPU variable.
  */
 
 #define KERNEL_CS 0x08
@@ -162,77 +163,44 @@ isr_stub_table:
 	.globl  syscall_entry
 	.type   syscall_entry, @function
 syscall_entry:
-	/* In: rcx = user rip, r11 = user rflags, rsp = user stack. IF is masked. */
+	/* In: rcx = user rip, r11 = user rflags, rsp = user stack. IF is masked.
+	 * 32 bytes of padding above the frame leave room for a full trap frame
+	 * at the very top of the stack, for system calls that leave via IRET. */
 	movq    %rsp, syscall_user_rsp(%rip)
 	movq    syscall_kernel_rsp(%rip), %rsp
+	subq    $32, %rsp
 	pushq   syscall_user_rsp(%rip)          /* frame.rsp    */
 	pushq   %r11                            /* frame.rflags */
 	pushq   %rcx                            /* frame.rip    */
 	PUSH_GPRS
 	movq    %rsp, %rdi                      /* struct syscall_frame * */
 	cld
-	call    syscall_handler                 /* does not return if the task exited */
+	call    syscall_handler                 /* 0, or a trap frame to IRET through */
+	testq   %rax, %rax
+	jnz     1f
 	POP_GPRS
 	popq    %rcx                            /* rip    -> rcx for SYSRET */
 	popq    %r11                            /* rflags -> r11 for SYSRET */
 	popq    %rsp
 	sysretq
+1:	movq    %rax, %rsp
+	jmp     ret_to_user
 
-/* ---- Ring 3 entry / exit ---------------------------------------------------
+/* ---- Ring 3 entry ----------------------------------------------------------
  *
- * long user_enter(const struct user_start *s);
- *
- * Saves the callee-saved kernel context, then IRETs to ring 3. It "returns"
- * when some other kernel path (exit syscall, fatal trap) calls
- * user_exit_resume(), which unwinds straight back to user_enter's caller.
+ * A new user thread's kernel stack holds a struct trap_frame at its top and
+ * user_thread_start as the return address switch_context() pops. Every
+ * other way back to ring 3 is the end of an interrupt or system call.
  */
-	.globl  user_enter
-	.type   user_enter, @function
-user_enter:
-	pushq   %rbp
-	pushq   %rbx
-	pushq   %r12
-	pushq   %r13
-	pushq   %r14
-	pushq   %r15
-	movq    %rsp, kernel_resume_rsp(%rip)
-
-	pushq   $USER_DS                        /* ss     */
-	pushq   8(%rdi)                         /* rsp    */
-	pushq   $0x202                          /* rflags: IF=1, user code is preemptible */
-	pushq   $USER_CS                        /* cs     */
-	pushq   0(%rdi)                         /* rip    */
-
-	movq    24(%rdi), %rsi
-	movq    32(%rdi), %rdx
-	movq    40(%rdi), %rcx
-	movq    16(%rdi), %rdi
-	xorl    %eax, %eax                      /* do not leak kernel values to user mode */
-	xorl    %ebx, %ebx
-	xorl    %ebp, %ebp
-	xorl    %r8d, %r8d
-	xorl    %r9d, %r9d
-	xorl    %r10d, %r10d
-	xorl    %r11d, %r11d
-	xorl    %r12d, %r12d
-	xorl    %r13d, %r13d
-	xorl    %r14d, %r14d
-	xorl    %r15d, %r15d
+	.globl  user_thread_start
+	.type   user_thread_start, @function
+user_thread_start:
+	call    sched_thread_begin              /* rsp is 16-byte aligned here */
+	.globl  ret_to_user
+ret_to_user:
+	POP_GPRS
+	addq    $16, %rsp                       /* vector + error code */
 	iretq
-
-/* void user_exit_resume(long status) __attribute__((noreturn)); */
-	.globl  user_exit_resume
-	.type   user_exit_resume, @function
-user_exit_resume:
-	movq    kernel_resume_rsp(%rip), %rsp
-	movq    %rdi, %rax
-	popq    %r15
-	popq    %r14
-	popq    %r13
-	popq    %r12
-	popq    %rbx
-	popq    %rbp
-	ret
 
 /*
  * void switch_context(u64 **save_rsp, u64 *load_rsp);
@@ -275,6 +243,13 @@ nt_exit_thunk:
 	movl    $0x2C, %eax                     /* NtTerminateProcess       */
 	syscall
 	ud2
+	.fill   0x20 - (. - nt_exit_thunk), 1, 0xCC
+	/* +0x20: where a thread started by NtCreateThreadEx returns to. */
+	movq    $-2, %r10                       /* arg1: NtCurrentThread()  */
+	movl    %eax, %edx                      /* arg2: exit status        */
+	movl    $0x53, %eax                     /* NtTerminateThread        */
+	syscall
+	ud2
 nt_exit_thunk_end:
 
 /* ---- Data ------------------------------------------------------------------ */
@@ -282,16 +257,7 @@ nt_exit_thunk_end:
 	.data
 	.balign 8
 	.globl  syscall_kernel_rsp
-syscall_kernel_rsp:
-	.quad   ring0_stack_top
+syscall_kernel_rsp:                             /* top of the running user thread's kernel stack */
+	.quad   0
 syscall_user_rsp:
 	.quad   0
-kernel_resume_rsp:
-	.quad   0
-
-	.bss
-	.balign 16
-ring0_stack:
-	.skip   16384
-	.globl  ring0_stack_top
-ring0_stack_top:
