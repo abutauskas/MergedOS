@@ -205,6 +205,14 @@ int desktop_viewer_rows(const struct desktop *d, const struct desk_window *w)
 	return MOS_MAX(1, (c.h - strip_h(d) - 3 - 2 * pad(d)) / (12 * vs));
 }
 
+struct desk_rect desktop_row_rect(const struct desktop *d, const struct desk_window *w, int row)
+{
+	const struct desk_rect c = desktop_content_rect(d, w);
+
+	return (struct desk_rect){ c.x + pad(d), c.y + pad(d) + row * line_h(d), c.w - 2 * pad(d),
+				   line_h(d) };
+}
+
 /* Close, minimise and maximise boxes; empty where the layout has none. */
 static struct desk_rect control_rect(const struct desktop *d, const struct desk_window *w,
 				     enum desk_part part)

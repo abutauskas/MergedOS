@@ -250,6 +250,7 @@ MOTD = b"""Welcome to MergedOS.
 One terminal, two vocabularies: try `dir`, `ls`, `Get-Process`, `free`,
 `hello.exe`, `./bin/hello.linux`, `open /Applications/Hello.app`,
 `mpkg run /pkg/hello_1.0-1_amd64.deb`, or `help`.
+Any file opens: `file /home/samples/sample.png`, `open /home/samples/README.md`.
 """
 
 

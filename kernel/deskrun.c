@@ -24,7 +24,9 @@
 #include <mergedos/setup.h>
 #include "abi_dispatch/binfmt.h"
 #include "desktop/desktop.h"
+#include "filetype/filetype.h"
 #include "mergedfence/fence.h"
+#include "src/msh/msh.h"
 
 static struct desktop desk;
 static bool running, term_muted;
@@ -40,17 +42,100 @@ static void trace2(const char *what, const char *name)
 	console_trace("\n");
 }
 
-/* ---- window contents ------------------------------------------------------- */
+/* ---- the Viewer ------------------------------------------------------------- */
 
-static bool looks_text(const u8 *p, u64 n)
+/*
+ * One document at a time, owned by the desktop thread. The shell asks for a
+ * file through view_request(); the thread picks it up within 20 ms. Images
+ * up to 256 x 192 pixels are decoded (PNG scanlines need the scratch area,
+ * which also holds a decompressed tar.gz for its listing).
+ */
+#define VIEW_MAX_PX   (256 * 192)
+#define VIEW_SCRATCH  (200 * 1024)
+
+static u8 view_rgb[VIEW_MAX_PX * 3];
+static u8 view_scratch[VIEW_SCRATCH];
+static struct ft_doc vdoc;
+static struct ft_image vimg;
+static unsigned vview;                  /* FT_VIEW_* shown                  */
+static int vscroll;                     /* first line shown                 */
+static char vtitle[80], vline[FT_LINE_MAX];
+static char vreq_path[128];
+static volatile u32 vreq_seq;
+
+enum { TAB_TEXT, TAB_HEX, TAB_IMAGE, TAB_INFO, TAB_UP, TAB_DOWN, TAB_COUNT };
+
+/* Which action the i-th visible tab stands for, or -1. */
+static int view_tab(int i)
 {
-	for (u64 i = 0; i < n && i < 256; i++)
-		if (p[i] < 0x20 && p[i] != '\n' && p[i] != '\r' && p[i] != '\t')
-			return false;
+	static const unsigned bits[4] = { FT_VIEW_TEXT, FT_VIEW_HEX, FT_VIEW_IMAGE, FT_VIEW_INFO };
+	int n = 0;
+
+	if (!vdoc.views)
+		return -1;
+	for (int t = 0; t < TAB_COUNT; t++) {
+		bool on = t < TAB_UP ? (vdoc.views & bits[t]) != 0 : vview != FT_VIEW_IMAGE;
+
+		if (on && n++ == i)
+			return t;
+	}
+	return -1;
+}
+
+static unsigned tab_view(int t)
+{
+	static const unsigned bits[4] = { FT_VIEW_TEXT, FT_VIEW_HEX, FT_VIEW_IMAGE, FT_VIEW_INFO };
+
+	return t >= 0 && t < TAB_UP ? bits[t] : 0;
+}
+
+static const char *host_tab(void *ctx, int i, bool *active)
+{
+	static const char *const labels[TAB_COUNT] = { "Text", "Hex", "Image", "Info", "Up",
+						       "Down" };
+	const int t = view_tab(i);
+
+	(void)ctx;
+	if (t < 0)
+		return NULL;
+	*active = tab_view(t) == vview;
+	return labels[t];
+}
+
+static bool host_image(void *ctx, struct desk_image *img)
+{
+	(void)ctx;
+	if (vview != FT_VIEW_IMAGE || !vimg.rgb)
+		return false;
+	*img = (struct desk_image){ vimg.rgb, (int)vimg.w, (int)vimg.h };
 	return true;
 }
 
-/* The i-th ramdisk file the Files window lists: programs and text files. */
+static const char *viewer_line(int i)
+{
+	if (i == DESK_LINE_TITLE)
+		return vtitle[0] ? vtitle : NULL;
+	if (i < 0 || !vdoc.views)
+		return i == 0 ? "No file open: click one in Files, or type open <path>." : NULL;
+	if (vview == FT_VIEW_IMAGE) {
+		if (i)
+			return NULL;
+		ksnprintf(vline, sizeof(vline), "%u x %u pixels, %s, %llu bytes", (unsigned)vimg.w,
+			  (unsigned)vimg.h, vdoc.type.name, (unsigned long long)vdoc.len);
+		return vline;
+	}
+	return ft_doc_line(&vdoc, vview, vscroll + i, vline, sizeof(vline)) ? vline : NULL;
+}
+
+static void view_request(const char *path)
+{
+	mos_strlcpy(vreq_path, path, sizeof(vreq_path));
+	__atomic_add_fetch(&vreq_seq, 1, __ATOMIC_RELEASE);
+}
+
+/* ---- window contents ------------------------------------------------------- */
+
+/* The i-th ramdisk file the Files window lists: every regular file. */
 static bool file_entry(int i, struct tar_entry *e, bool *exe)
 {
 	size_t off = 0;
@@ -62,8 +147,6 @@ static bool file_entry(int i, struct tar_entry *e, bool *exe)
 		if ((e->type != '0' && e->type != '\0') || strlen(e->name) > 100)
 			continue;
 		*exe = !binfmt_probe(e->data, (size_t)e->size, &bi) && bi.format != BINFMT_SCRIPT;
-		if (!*exe && !looks_text(e->data, e->size))
-			continue;
 		if (n++ == i)
 			return true;
 	}
@@ -133,11 +216,15 @@ static const char *host_line(void *ctx, enum desk_kind kind, int i)
 	bool exe;
 
 	(void)ctx;
+	if (kind == DESK_WIN_VIEWER)
+		return viewer_line(i);
+	if (i == DESK_LINE_TITLE)
+		return NULL;
 	switch (kind) {
 	case DESK_WIN_FILES:
 		if (i < 0 || !file_entry(i, &e, &exe))
 			return NULL;
-		ksnprintf(buf, sizeof(buf), "%s  /%s", exe ? "run" : "cat", e.name);
+		ksnprintf(buf, sizeof(buf), "%s  /%s", exe ? "run " : "open", e.name);
 		return buf;
 	case DESK_WIN_SYSTEM:
 		return i < 0 ? NULL : system_line(buf, sizeof(buf), i);
@@ -155,7 +242,7 @@ static struct desk_rect host_term(void *ctx, struct desk_rect r)
 	return r;
 }
 
-static const struct desk_host host = { NULL, host_line, host_term };
+static const struct desk_host host = { NULL, host_line, host_term, host_tab, host_image };
 
 /* ---- repainting ---------------------------------------------------------------- */
 
@@ -262,6 +349,13 @@ static void launcher(enum desk_action a)
 			ksnprintf(where, sizeof(where), "%s title %d %d", desktop_kind_name(kind),
 				  t.x + t.w / 2, t.y + t.h / 2);
 			trace2("window ", where);
+			if (kind == DESK_WIN_FILES) {
+				const struct desk_rect r = desktop_row_rect(&desk, w, 0);
+
+				ksnprintf(where, sizeof(where), "files row0 %d %d", r.x + 16,
+					  r.y + r.h / 2);
+				trace2("window ", where);
+			}
 		} else {
 			trace2("no free window slot for ", desktop_kind_name(kind));
 		}
@@ -272,6 +366,70 @@ static void launcher(enum desk_action a)
 	}
 }
 
+/* Open a ramdisk file (native path) in the Viewer window. Desktop thread only. */
+static void viewer_open(const char *path)
+{
+	const u8 *data;
+	size_t size;
+	const struct desk_window *w;
+	bool opened;
+	char where[48];
+	int rc;
+
+	while (*path == '/')
+		path++;
+	if (initrd_find(path, &data, &size)) {
+		trace2("viewer: no such file ", path);
+		return;
+	}
+	ft_doc_open(&vdoc, data, size, path, view_scratch, sizeof(view_scratch));
+	vimg.rgb = NULL;
+	if (vdoc.views & FT_VIEW_IMAGE) {
+		rc = ft_image_decode(data, size, view_rgb, sizeof(view_rgb), view_scratch,
+				     sizeof(view_scratch), &vimg);
+		if (rc) {
+			vdoc.views &= ~FT_VIEW_IMAGE;
+			ksnprintf(vdoc.note, sizeof(vdoc.note), "image not shown: %s",
+				  ft_image_error(rc));
+		}
+	}
+	vview = ft_doc_default_view(&vdoc);
+	vscroll = 0;
+	ksnprintf(vtitle, sizeof(vtitle), "Viewer - %s", vdoc.name);
+	w = desktop_window(&desk, desktop_launch(&desk, DESK_WIN_VIEWER, &opened));
+	ksnprintf(vline, sizeof(vline), "/%s: %s (%s)%s", path, vdoc.type.name, vdoc.type.mime,
+		  vimg.rgb ? ", image decoded" : "");
+	trace2("viewer: ", vline);
+	if (!w) {
+		trace2("no free window slot for ", "viewer");
+		return;
+	}
+	ksnprintf(where, sizeof(where), "viewer title %d %d", desktop_title_rect(&desk, w).x +
+		  desktop_title_rect(&desk, w).w / 2, desktop_title_rect(&desk, w).y + 8);
+	trace2("window ", where);
+	flush();
+	desktop_paint(&desk, w->frame, &host);  /* new content in a reused window */
+	gfx_cursor_refresh();
+}
+
+static void viewer_tab(const struct desk_window *w, int slot)
+{
+	const int t = view_tab(slot), rows = desktop_viewer_rows(&desk, w);
+
+	if (t < 0)
+		return;
+	if (t == TAB_UP) {
+		vscroll = MOS_MAX(0, vscroll - rows);
+	} else if (t == TAB_DOWN) {
+		if (ft_doc_line(&vdoc, vview, vscroll + rows, vline, sizeof(vline)))
+			vscroll += rows;
+	} else {
+		vview = tab_view(t);
+		vscroll = 0;
+	}
+	desktop_paint(&desk, desktop_content_rect(&desk, w), &host);
+}
+
 static void file_clicked(int row)
 {
 	struct tar_entry e;
@@ -280,8 +438,12 @@ static void file_clicked(int row)
 
 	if (row < 0 || !file_entry(row, &e, &exe))
 		return;
-	ksnprintf(cmd, sizeof(cmd), "%s /%s\n", exe ? "run" : "cat", e.name);
 	trace2("files: ", e.name);
+	if (!exe) {
+		viewer_open(e.name);
+		return;
+	}
+	ksnprintf(cmd, sizeof(cmd), "run /%s\n", e.name);
 	console_inject(cmd);
 	(void)desktop_focus(&desk, terminal()->id);     /* show the output */
 }
@@ -321,6 +483,11 @@ static void press(int x, int y)
 		(void)desktop_focus(&desk, h.win);
 		if (w->kind == DESK_WIN_FILES)
 			file_clicked(h.row);
+		break;
+	case DESK_PART_TAB:
+		(void)desktop_focus(&desk, h.win);
+		flush();
+		viewer_tab(w, h.row);
 		break;
 	case DESK_PART_BUTTON: {
 		const struct fence *f = monitor_fence();
@@ -386,9 +553,17 @@ static void desk_thread(void *arg)
 	const struct mouse_state *m = mouse_get();
 	u32 presses = m->presses, releases = m->releases;
 	u64 last_status = 0;
+	u32 seq = 0;
 
 	(void)arg;
 	for (;;) {
+		if (__atomic_load_n(&vreq_seq, __ATOMIC_ACQUIRE) != seq) {
+			char path[sizeof(vreq_path)];
+
+			seq = __atomic_load_n(&vreq_seq, __ATOMIC_ACQUIRE);
+			mos_strlcpy(path, vreq_path, sizeof(path));
+			viewer_open(path);
+		}
 		if (m->presses != presses) {
 			presses = m->presses;
 			press(m->press_x, m->press_y);
@@ -428,6 +603,12 @@ bool desktop_start(enum de_id layout)
 	console_set_region(0, VGA_ROWS - 1);
 	console_set_attr(desktop_console_attr(layout));
 	console_clear();
+	{
+		char path[96];
+
+		if (boot_cmdline_get("view", path, sizeof(path)))       /* view=/home/x.png */
+			view_request(path);
+	}
 	if (boot_cmdline_get("desk_demo", NULL, 0)) {   /* overlapping windows to look at */
 		(void)desktop_open(&desk, DESK_WIN_SYSTEM);
 		(void)desktop_open(&desk, DESK_WIN_FILES);
@@ -460,4 +641,26 @@ int desktop_selftest(void)
 				g->active ? (int)g->height : GFX_DEFAULT_HEIGHT, cw, ch, g->active);
 	console_fb_mute(false);
 	return bad;
+}
+
+bool desktop_view(const char *path)
+{
+	if (!running)
+		return false;
+	view_request(path);
+	return true;
+}
+
+int desktop_view_decode(const u8 *data, size_t len, u32 *w, u32 *h)
+{
+	struct ft_image im;
+	int rc;
+
+	if (running)
+		return -MERR_AGAIN;
+	rc = ft_image_decode(data, len, view_rgb, sizeof(view_rgb), view_scratch,
+			     sizeof(view_scratch), &im);
+	*w = im.w;
+	*h = im.h;
+	return rc;
 }

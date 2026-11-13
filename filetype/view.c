@@ -561,7 +561,9 @@ void ft_meta_read(const u8 *b, size_t len, const struct ft_type *t, struct ft_me
 static const char *viewer_note(const struct ft_type *t)
 {
 	if (ft_rendered(t->kind))
-		return t->kind == FT_SVG ? "shown as text (no vector renderer)" : "rendered";
+		return t->kind == FT_SVG ? "shown as text (no vector renderer)" :
+		       t->cls == FT_C_TEXT ? "shown as text" :
+		       t->cls == FT_C_IMAGE ? "decoded and drawn" : "entries listed";
 	switch (t->cls) {
 	case FT_C_AUDIO: return "identified only: no audio decoder or sound driver";
 	case FT_C_VIDEO: return "identified only: no video decoder";

@@ -17,6 +17,7 @@ enum msh_builtin {
 	MSH_NONE = 0,
 	MSH_HELP, MSH_LS, MSH_CAT, MSH_ECHO, MSH_CLEAR, MSH_UNAME, MSH_FREE, MSH_PS,
 	MSH_SYSINFO, MSH_WHICH, MSH_RUN, MSH_OPEN, MSH_PKG, MSH_DE, MSH_FENCE, MSH_SHUTDOWN,
+	MSH_FILE,
 	/* recognised and mapped, but they need a writable VFS to do anything: */
 	MSH_CD, MSH_PWD, MSH_CP, MSH_MV, MSH_RM, MSH_MKDIR, MSH_KILL, MSH_GREP, MSH_DATE,
 };

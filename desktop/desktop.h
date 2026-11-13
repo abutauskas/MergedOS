@@ -149,6 +149,8 @@ struct desk_rect desktop_content_rect(const struct desktop *d, const struct desk
 /* Viewer: tab-strip slot i, and how many text lines fit below the strip. */
 struct desk_rect desktop_tab_rect(const struct desktop *d, const struct desk_window *w, int i);
 int  desktop_viewer_rows(const struct desktop *d, const struct desk_window *w);
+/* Text line `row` of a Files/System/Mergedfence window (what desktop_hit() maps back). */
+struct desk_rect desktop_row_rect(const struct desktop *d, const struct desk_window *w, int row);
 /* Frame moved by a delta and clamped to the work area (the drag outline). */
 struct desk_rect desktop_moved_frame(const struct desktop *d, const struct desk_window *w,
 				     int dx, int dy);
