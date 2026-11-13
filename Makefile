@@ -239,6 +239,37 @@ $(BUILD)/guest/demo.musl: src/guest/musl_demo.c
 	else echo "note: $(MUSL_CC) not found, bin/demo.musl left out"; : > $@; fi
 GUEST_BINS += $(BUILD)/guest/demo.musl
 
+# Dynamically linked test programs: run natively under their own, unmodified
+# dynamic linkers (glibc ld-linux, musl ld-musl). Built when the toolchain is
+# present; otherwise empty files, and the kernel reports the checks as skipped.
+# They live only in the sysroot module (build/sysroot.tar), not the ramdisk.
+GNU_CC ?= gcc
+$(BUILD)/guest/libdyntest.so: src/guest/libdyntest.c
+	@mkdir -p $(dir $@)
+	@if command -v $(GNU_CC) >/dev/null 2>&1; then \
+		$(GNU_CC) -O2 -fPIC -shared -s -o $@ $<; \
+	else : > $@; fi
+$(BUILD)/guest/dyntest.gnu: src/guest/dyntest.c $(BUILD)/guest/libdyntest.so
+	@mkdir -p $(dir $@)
+	@if command -v $(GNU_CC) >/dev/null 2>&1; then \
+		$(GNU_CC) -O2 -s -DLIBC_NAME='"glibc"' -DDLLIB='"/lib/libdyntest.so"' \
+			-o $@ $< -ldl; \
+	else echo "note: $(GNU_CC) not found, dyntest.gnu left out"; : > $@; fi
+$(BUILD)/guest/libdyntest-musl.so: src/guest/libdyntest.c
+	@mkdir -p $(dir $@)
+	@if command -v $(MUSL_CC) >/dev/null 2>&1; then \
+		$(MUSL_CC) -O2 -fPIC -shared -s -o $@ $<; \
+	else : > $@; fi
+$(BUILD)/guest/dyntest.musl: src/guest/dyntest.c $(BUILD)/guest/libdyntest-musl.so
+	@mkdir -p $(dir $@)
+	@if command -v $(MUSL_CC) >/dev/null 2>&1; then \
+		$(MUSL_CC) -O2 -s -DLIBC_NAME='"musl"' -DDLLIB='"/lib/libdyntest-musl.so"' \
+			-o $@ $<; \
+	else echo "note: $(MUSL_CC) not found, dyntest.musl left out"; : > $@; fi
+DYN_BINS := $(BUILD)/guest/dyntest.gnu $(BUILD)/guest/libdyntest.so \
+	    $(BUILD)/guest/dyntest.musl $(BUILD)/guest/libdyntest-musl.so
+GUEST_BINS += $(DYN_BINS)
+
 # A real Windows x64 console program against the MinGW-w64 C runtime, when the
 # cross compiler is installed. Without it an empty file is produced and the
 # kernel reports the check as skipped.
@@ -275,6 +306,17 @@ IMAGE_DEPS := $(GUEST_BINS) tools/mkimage.py src/guest/Hello.app/Contents/Info.p
 $(INITRD): $(IMAGE_DEPS)
 	$(PYTHON) tools/mkimage.py initrd --guest-dir $(BUILD)/guest --src-dir src/guest --out $@
 
+# The sysroot module: the host's glibc and musl runtimes plus the dynamic test
+# programs and a distribution BusyBox, as a ustar archive loaded as a boot
+# module (qemu -initrd). Merged under / by the kernel, read-only. Not in the
+# kernel image, so it does not count towards the kernel footprint.
+SYSROOT := $(BUILD)/sysroot.tar
+$(SYSROOT): $(DYN_BINS) tools/mkimage.py
+	$(PYTHON) tools/mkimage.py sysroot --guest-dir $(BUILD)/guest --src-dir src/guest --out $@
+
+.PHONY: sysroot
+sysroot: $(SYSROOT)
+
 $(BUILD)/fixtures/.stamp: $(IMAGE_DEPS)
 	@rm -rf $(BUILD)/fixtures
 	$(PYTHON) tools/mkimage.py fixtures --guest-dir $(BUILD)/guest --src-dir src/guest \
@@ -301,8 +343,8 @@ test: test-host test-boot test-disk test-e2e
 test-host: $(BUILD)/host/run_tests $(BUILD)/fixtures/.stamp
 	$(BUILD)/host/run_tests
 
-test-boot: $(KERNEL_ELF32)
-	QEMU=$(QEMU) QEMU_MEM=$(QEMU_MEM) tools/boot-test.sh $(KERNEL_ELF32)
+test-boot: $(KERNEL_ELF32) $(SYSROOT)
+	QEMU=$(QEMU) QEMU_MEM=$(QEMU_MEM) SYSROOT=$(SYSROOT) tools/boot-test.sh $(KERNEL_ELF32)
 
 # Install onto an emulated dual-boot IDE disk; prove existing partitions are untouched.
 test-disk: $(KERNEL_ELF32)

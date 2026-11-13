@@ -14,6 +14,11 @@ QEMU=${QEMU:-qemu-system-x86_64}
 TIMEOUT=${TIMEOUT:-90}
 [ $# -gt 0 ] || set -- "${QEMU_MEM:-64}"
 
+# Optional sysroot module (glibc/musl runtimes) for the dynamic-linking checks.
+SYSROOT=${SYSROOT:-}
+mod=""
+[ -n "$SYSROOT" ] && [ -s "$SYSROOT" ] && mod="-initrd $SYSROOT"
+
 LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT
 status=0
@@ -21,7 +26,7 @@ status=0
 for mem in "$@"; do
 	timeout "$TIMEOUT" "$QEMU" -m "$mem" -no-reboot -display none -serial stdio \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
-		-kernel "$KERNEL" -append "selftest" >"$LOG" 2>&1
+		-kernel "$KERNEL" $mod -append "selftest" >"$LOG" 2>&1
 	rc=$?
 	if [ "$rc" -eq 33 ] && grep -q '^MERGEDOS-SELFTEST: PASS' "$LOG"; then
 		footprint=$(sed -n 's/.*kernel footprint: \([0-9]* KiB\).*/\1/p' "$LOG" | tail -n 1)

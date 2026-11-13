@@ -38,6 +38,7 @@ struct pmm_stats {
 	u64 free_frames;
 	u64 kernel_frames;      /* kernel image + boot page tables           */
 	u64 bitmap_frames;      /* allocator metadata                        */
+	u64 module_frames;      /* boot module (sysroot archive), read only  */
 	u64 peak_used_frames;   /* high-water mark of usable - free          */
 };
 
@@ -63,6 +64,8 @@ void vmm_as_destroy(u64 pml4_phys);
 
 /* Map (or widen the permissions of) one user page; returns its frame or 0. */
 u64  vmm_map_user(u64 pml4_phys, u64 va, u32 prot);
+/* Set the exact rights (VMM_*) on a page that is already mapped. Returns false if not. */
+bool vmm_remap_user(u64 pml4_phys, u64 va, u32 prot);
 u64  vmm_user_to_phys(u64 pml4_phys, u64 va);   /* 0 if not mapped for user */
 bool vmm_user_ok(u64 pml4_phys, u64 va, u64 len, bool write);
 bool vmm_unmap_user(u64 pml4_phys, u64 va);     /* frees the frame */

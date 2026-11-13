@@ -93,9 +93,12 @@ void system_mem_report(void)
 		(unsigned long long)(__bss_end - __bss_start) / 1024);
 	kprintf("[mem] kernel footprint: %llu KiB resident (image + boot tables %llu KiB, "
 		"frame bitmap %llu KiB), peak %llu KiB\n",
-		(unsigned long long)(st.usable_frames - st.free_frames) * 4,
+		(unsigned long long)(st.usable_frames - st.free_frames - st.module_frames) * 4,
 		(unsigned long long)image / 1024, (unsigned long long)st.bitmap_frames * 4,
 		(unsigned long long)st.peak_used_frames * 4);
+	if (st.module_frames)
+		kprintf("[mem] sysroot module: %llu KiB (read-only libraries, not counted above)\n",
+			(unsigned long long)st.module_frames * 4);
 	kprintf("[mem] RAM: %llu KiB usable, %llu KiB free (%llu%% of the machine is free)\n",
 		(unsigned long long)st.usable_frames * 4, (unsigned long long)st.free_frames * 4,
 		(unsigned long long)(st.free_frames * 100 / st.usable_frames));
@@ -160,6 +163,62 @@ static int abi_boot_check(void)
 				(unsigned long long)rep.syscalls, rep.pages, rc ? rc : rep.exit_code,
 				ok ? "OK" : "FAILED");
 			failures += !ok;
+		}
+	}
+	/*
+	 * Dynamically linked Linux programs: run natively under their own,
+	 * unmodified dynamic linker (glibc ld-linux, musl ld-musl). These live in
+	 * the sysroot module (qemu -initrd build/sysroot.tar); without it, skipped.
+	 */
+	{
+		static const char *const env[] = {
+			"LD_LIBRARY_PATH=/lib:/lib64:/lib/x86_64-linux-gnu:/usr/lib",
+			"PATH=/bin", "HOME=/home/user", "TERM=linux", NULL,
+		};
+		static const struct {
+			const char *path;
+			const char *argv[4];
+			const char *expect;
+			const char *note;
+		} dyn[] = {
+			{ "/bin/dyntest.gnu",  { "dyntest.gnu", "alpha", "beta", NULL },
+			  "dyntest: dlopen add=42", "glibc dyntest (built without gcc)" },
+			{ "/bin/dyntest.musl", { "dyntest.musl", "one", "two", NULL },
+			  "dyntest: dlopen add=42", "musl dyntest (built without musl-gcc)" },
+			{ "/bin/busybox",      { "busybox", "echo", "busybox-says-hi", NULL },
+			  "busybox-says-hi", "busybox (no distribution busybox)" },
+			{ "/bin/busybox",      { "busybox", "ls", "/bin", NULL },
+			  "busybox", "busybox (no distribution busybox)" },
+		};
+		const u8 *img;
+		size_t len;
+
+		if (initrd_find("lib64/ld-linux-x86-64.so.2", &img, &len) &&
+		    initrd_find("lib/ld-musl-x86_64.so.1", &img, &len)) {
+			kprintf("[dyn] dynamic linking    skipped (no sysroot module; "
+				"use qemu -initrd build/sysroot.tar)\n");
+		} else {
+			for (unsigned i = 0; i < ARRAY_SIZE(dyn); i++) {
+				struct exec_report rep = { 0 };
+				int rc;
+				bool ok;
+
+				if (initrd_find(dyn[i].path + 1, &img, &len)) {
+					kprintf("[dyn] %-18s skipped (%s)\n", dyn[i].path, dyn[i].note);
+					continue;
+				}
+				rc = task_exec_argv(dyn[i].path, dyn[i].argv, env, &rep);
+				ok = !rc && rep.exit_code == 0 && !rep.faulted &&
+				     rep.personality == ABI_LINUX &&
+				     mos_memstr(rep.out, rep.out_len, dyn[i].expect);
+				kprintf("[dyn] %-18s %-9s -> %-7s %llu syscalls, %u pages, exit %d  %s\n",
+					dyn[i].argv[1] ? dyn[i].argv[1] : dyn[i].path,
+					binfmt_format_name(rep.format),
+					abi_personality_name(rep.personality),
+					(unsigned long long)rep.syscalls, rep.pages,
+					rc ? rc : rep.exit_code, ok ? "OK" : "FAILED");
+				failures += !ok;
+			}
 		}
 	}
 	/*

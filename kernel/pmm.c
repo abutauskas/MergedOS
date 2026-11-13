@@ -92,7 +92,8 @@ void pmm_init(const struct boot_info *bi)
 
 	nframes = top >> PAGE_SHIFT;
 	bitmap_bytes = (nframes + 7) / 8;
-	bitmap_phys = ALIGN_UP(kernel_end, PAGE_SIZE);
+	/* Boot loaders put modules right after the kernel: keep the bitmap clear of them. */
+	bitmap_phys = ALIGN_UP(MOS_MAX(kernel_end, bi->mod_end), PAGE_SIZE);
 	if (bitmap_phys + bitmap_bytes > top)
 		panic("not enough RAM for the frame bitmap (top=%llx)", (unsigned long long)top);
 
@@ -119,6 +120,8 @@ void pmm_init(const struct boot_info *bi)
 
 	reserve_range(kernel_start, kernel_end, &stats.kernel_frames);
 	reserve_range(bitmap_phys, bitmap_phys + bitmap_bytes, &stats.bitmap_frames);
+	if (bi->mod_end)
+		reserve_range(bi->mod_start, bi->mod_end, &stats.module_frames);
 
 	next_hint = (bitmap_phys + bitmap_bytes) >> PAGE_SHIFT;
 	dmap_extend(top);

@@ -10,7 +10,7 @@
 #define TASK_NAME_MAX    48
 #define TASK_CAPTURE_MAX 192
 #define TASK_FD_MAX      32
-#define TASK_VMA_MAX     24
+#define TASK_VMA_MAX     64
 #define TASK_VM_LIMIT    (1ULL << 30)  /* virtual memory a process may reserve */
 #define TASK_MMAP_BASE   0x0000100000000000ULL
 #define USER_STACK_TOP   0x00007FFFFFFFF000ULL
@@ -21,10 +21,16 @@
 struct file;
 struct thread;
 
-/* A reserved range of the address space, backed by zeroed pages on first touch. */
+/*
+ * A reserved range of the address space, backed on first touch by a zeroed
+ * page, or for a file mapping by a private copy of the file's bytes: `src`
+ * holds the bytes for `start` onwards, `srclen` of them (zeros after that).
+ */
 struct vma {
 	u64 start, end;
-	u32 prot;                       /* VMM_* */
+	u32 prot;                       /* VMM_*, 0 = PROT_NONE */
+	const u8 *src;                  /* immutable file contents, or NULL */
+	u64 srclen;
 };
 
 /* Linux kernel layout of struct sigaction (x86-64). */
@@ -66,6 +72,7 @@ struct task {
 	u64 brk_start, brk;             /* heap grown by brk()                     */
 	u64 mmap_next;                  /* next address for anonymous mmap()       */
 	u64 gs_base;                    /* NT: the TEB, read through gs:[0x30]      */
+	char exe[128];                  /* path of the program (/proc/self/exe)     */
 	struct vma vma[TASK_VMA_MAX];
 	u32 nvma;
 
@@ -99,6 +106,9 @@ struct exec_report {
  * not be loaded.
  */
 int task_exec(const char *name, const void *image, size_t len, struct exec_report *rep);
+/* Same, for a program in the VFS with its own argv and environment (NULL-terminated). */
+int task_exec_argv(const char *path, const char *const argv[], const char *const envp[],
+		   struct exec_report *rep);
 
 struct task *task_current(void);
 struct task *task_new(const char *name);        /* on the process list, no memory yet */
@@ -112,6 +122,7 @@ int  task_copy_to_as(u64 pml4, u64 va, const void *src, u64 len);
 #define EXEC_ARGS_BUF 3072
 struct exec_args {
 	u32 argc, envc, len;
+	char path[128];                 /* the executable's path (AT_EXECFN)       */
 	char buf[EXEC_ARGS_BUF];
 };
 void exec_args_init(struct exec_args *a, const char *argv0);

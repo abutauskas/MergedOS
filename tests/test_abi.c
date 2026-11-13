@@ -58,11 +58,18 @@ void test_binfmt(void)
 	CHECK_EQ(info.personality, ABI_LINUX);
 	img[7] = 0;
 
-	/* Turn the data segment into PT_INTERP: now it needs a dynamic linker. */
+	/* Turn the data segment into PT_INTERP: now it needs a dynamic linker,
+	 * and its contents are no NUL-terminated path, so it is refused. */
 	img[64 + 56] = 3;
-	CHECK_EQ(binfmt_load_plan(img, len, &plan), -MERR_NOTSUP);
+	CHECK_EQ(binfmt_load_plan(img, len, &plan), -MERR_NOEXEC);
 	CHECK(plan.info.flags & BINFMT_F_DYNAMIC);
 	img[64 + 56] = 1;
+	/* ET_DYN: planned with relative addresses (the kernel adds a bias). */
+	img[16] = 3;
+	CHECK_EQ(binfmt_load_plan(img, len, &plan), 0);
+	CHECK(plan.relative && plan.info.flags & BINFMT_F_PIE);
+	CHECK_EQ(plan.interp_len, 0);
+	img[16] = 2;
 	torture(img, len);
 	free(img);
 
