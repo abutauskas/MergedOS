@@ -14,7 +14,7 @@
 
 struct task;
 
-enum file_type { F_CONSOLE = 1, F_ROFILE, F_RODIR, F_RAMFS, F_PIPE };
+enum file_type { F_CONSOLE = 1, F_ROFILE, F_RODIR, F_RAMFS, F_PIPE, F_SOCKET };
 
 /* Open flags: the native set uses the Linux values. */
 #define VFS_O_ACCMODE   0x3
@@ -47,7 +47,14 @@ struct file {
 	struct rnode *node;             /* F_RAMFS */
 	struct pipe *pipe;              /* F_PIPE */
 	bool pipe_write;
+	void *sock;                     /* F_SOCKET: handle from inet_socket_ops.create */
 };
+
+/* Sockets (kernel/net/sock_linux.c): the file wrapper and its read/write/close hooks. */
+struct file *socket_file_new(void *sock, u32 flags);
+long sock_file_read(struct task *t, struct file *f, u64 ubuf, u64 len);
+long sock_file_write(struct task *t, struct file *f, u64 ubuf, u64 len);
+void sock_file_release(struct file *f);
 
 void vfs_init(void);
 int  vfs_write_file(const char *path, const void *data, size_t len);   /* writable mounts */

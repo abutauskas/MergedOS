@@ -506,6 +506,7 @@ def build_tree(guest_dir, src_dir):
         "bin/hello.exe": (read(os.path.join(guest_dir, "hello.exe")), 0o755),
         "bin/spin.linux": (read(os.path.join(guest_dir, "spin.linux")), 0o755),
         "bin/proctest.linux": (read(os.path.join(guest_dir, "proctest.linux")), 0o755),
+        "bin/nettest.linux": (read(os.path.join(guest_dir, "nettest.linux")), 0o755),
         "bin/cat.linux": (read(os.path.join(guest_dir, "proctest.linux")), 0o755),
         "Applications/Hello.app/Contents/Info.plist": (plist, 0o644),
         "Applications/Hello.app/Contents/MacOS/hello": (macho, 0o755),

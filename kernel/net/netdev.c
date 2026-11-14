@@ -13,12 +13,17 @@
 #include <mergedos/mm.h>
 #include <mergedos/sched.h>
 #include <mergedos/vfs.h>
+#include <mergedos/boot.h>
+#include <mergedos/initrd.h>
+#include <mergedos/task.h>
 #include "hardware_probe/hwprobe.h"
 #include "kernel/net/netdrv.h"
+#include "kernel/net/inet.h"
 
 struct nstack net_stack;
 bool net_present;
 static struct netdev *nic;
+static bool poller_started;
 
 u64 net_ms(void)
 {
@@ -104,46 +109,49 @@ static void net_wake(struct nstack *ns, struct nsock *s)
 }
 
 /*
- * The poller. While traffic is flowing it yields instead of sleeping, so a
- * request/response exchange is not delayed by the 10 ms tick; after 200 ms of
- * silence it sleeps one tick at a time.
+ * The poller: one pass per timer tick. (Spinning with thread_yield() starves the
+ * emulator's timer on a busy host, so the cost is up to 10 ms of latency.)
  */
 static void netd(void *arg)
 {
-	u64 last_activity = time_ticks();
-
 	(void)arg;
 	for (;;) {
 		u64 f = irq_save();
-		int n = nic->poll(nic, &net_stack);
+		int n = nic ? nic->poll(nic, &net_stack) : 0;
 
 		net_enter();
 		ns_pump(&net_stack, net_stack.now);
 		irq_restore(f);
-		if (n || net_stack.dhcp_state == DHCP_DISCOVER || net_stack.dhcp_state == DHCP_REQUEST)
-			last_activity = time_ticks();
-		if (time_ticks() - last_activity < SCHED_HZ / 5)
-			thread_yield();
-		else
-			thread_sleep_ms(10);
+		(void)n;
+		thread_sleep_ms(1);
 	}
 }
 
+void net_start_poller(void)
+{
+	if (poller_started)
+		return;
+	poller_started = true;
+	if (thread_create(netd, NULL, "netd") < 0)
+		panic("net: cannot start netd");
+}
+
+/* The stack always exists (loopback works without an adapter); netd starts when needed. */
 void net_init(void)
 {
+	ns_init(&net_stack, NULL);
+	net_stack.wake = net_wake;
+	net_stack.configured = net_configured;
 	nic = virtio_net_probe();
 	if (!nic)
 		nic = e1000_probe();
 	if (!nic) {
-		kprintf("[net] no supported network adapter (virtio-net, e1000)\n");
+		kprintf("[net] no supported network adapter (virtio-net, e1000); loopback only\n");
 		return;
 	}
 	net_present = true;
-	ns_init(&net_stack, nic);
-	net_stack.wake = net_wake;
-	net_stack.configured = net_configured;
+	net_stack.dev = nic;
 	net_enter();
-	ns_set_addr(&net_stack, 0, 0, 0);
 	vfs_write_file("etc/hosts", "127.0.0.1 localhost\n", 20);
 	{
 		u64 f = irq_save();
@@ -151,8 +159,7 @@ void net_init(void)
 		ns_dhcp_start(&net_stack);
 		irq_restore(f);
 	}
-	if (thread_create(netd, NULL, "netd") < 0)
-		panic("net: cannot start netd");
+	net_start_poller();
 	kprintf("[net] %s up, mac %02x:%02x:%02x:%02x:%02x:%02x, polled; DHCP started\n", nic->name,
 		nic->mac[0], nic->mac[1], nic->mac[2], nic->mac[3], nic->mac[4], nic->mac[5]);
 }
@@ -281,6 +288,32 @@ int net_selftest(void)
 	else {
 		kprintf("[net] dns: FAILED (no reply)\n");
 		bad++;
+	}
+	/* A guest program: loopback TCP/UDP, HTTP GET from the test host, DNS. */
+	{
+		char port[12], host[20], dns[20];
+		const char *argv[4] = { host, port, dns, NULL };
+		struct exec_report rep = { 0 };
+		const u8 *img;
+		size_t len;
+		int rc = -1;
+		bool ok;
+
+		if (!boot_cmdline_get("nettest", port, sizeof(port)))
+			mos_strlcpy(port, "0", sizeof(port));
+		put_ip(host, sizeof(host), net_stack.gw);
+		put_ip(dns, sizeof(dns), net_stack.dns[0]);
+		if (!strcmp(port, "0") || initrd_find("bin/nettest.linux", &img, &len)) {
+			kprintf("[net] guest socket test skipped (no nettest=PORT or image)\n");
+			return bad;
+		}
+		rc = task_exec_args("bin/nettest.linux", img, len, argv, &rep);
+		ok = !rc && rep.exit_code == 0 && !rep.faulted && mos_memstr(rep.out, rep.out_len, "nettest: OK");
+		if (rep.out_len < sizeof(rep.out))
+			rep.out[rep.out_len] = 0;
+		kprintf("%s", rep.out);
+		kprintf("[net] bin/nettest.linux: exit %d  %s\n", rc ? rc : rep.exit_code, ok ? "OK" : "FAILED");
+		bad += !ok;
 	}
 	return bad;
 }

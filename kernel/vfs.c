@@ -60,6 +60,8 @@ void file_put(struct file *f)
 		return;
 	if (f->type == F_RAMFS)
 		ramfs_close(f->node);
+	if (f->type == F_SOCKET)
+		sock_file_release(f);
 	if (f->type == F_PIPE) {
 		struct pipe *p = f->pipe;
 
@@ -72,6 +74,15 @@ void file_put(struct file *f)
 			kfree(p);
 	}
 	kfree(f);
+}
+
+struct file *socket_file_new(void *sock, u32 flags)
+{
+	struct file *f = file_new(F_SOCKET, VFS_O_RDWR | (flags & VFS_O_NONBLOCK));
+
+	if (f)
+		f->sock = sock;
+	return f;
 }
 
 struct file *console_file(void)
@@ -524,6 +535,8 @@ long msys_read(struct task *t, int fd, u64 ubuf, u64 len)
 		return stdin_read(t, ubuf, len);
 	case F_PIPE:
 		return pipe_read(t, f, ubuf, len);
+	case F_SOCKET:
+		return sock_file_read(t, f, ubuf, len);
 	case F_ROFILE:
 		n = (long)MOS_MIN(len, f->size - MOS_MIN(f->pos, f->size));
 		if (n && uaccess_copy_out(t, ubuf, f->data + f->pos, (size_t)n))
@@ -624,6 +637,8 @@ long msys_write(struct task *t, int fd, u64 ubuf, u64 len)
 		return console_out(t, ubuf, len);
 	case F_PIPE:
 		return pipe_write(t, f, ubuf, len);
+	case F_SOCKET:
+		return sock_file_write(t, f, ubuf, len);
 	case F_RAMFS: {
 		struct rnode *n = f->node;
 		u64 pos = (f->flags & VFS_O_APPEND) ? n->size : f->pos;
@@ -684,7 +699,8 @@ long msys_fstat(struct task *t, int fd, u64 *size, bool *is_tty)
 		       f->type == F_RAMFS ? (u64)(uintptr_t)f->node : (u64)(uintptr_t)f;
 	switch (f->type) {
 	case F_CONSOLE: return MSYS_ST_TTY;
-	case F_PIPE:    return MSYS_ST_FIFO;
+	case F_PIPE:
+	case F_SOCKET:  return MSYS_ST_FIFO;            /* sockets report as FIFOs for now */
 	case F_RODIR:   return MSYS_ST_DIR;
 	case F_RAMFS:   return f->node->dir ? MSYS_ST_DIR : MSYS_ST_FILE_RW;
 	default:        return MSYS_ST_FILE;

@@ -266,8 +266,18 @@ static long lx_brk(struct abi_ctx *ctx, const struct abi_call *c)
 	return msys_brk(ctx->task, c->arg[0]);
 }
 
+/* Sockets live in kernel/net/sock_linux.c; absent (NULL) in host builds. */
+const struct abi_sysent *net_linux_lookup(u64 nr) __attribute__((weak));
+long net_linux_ioctl(struct abi_ctx *ctx, const struct abi_call *c) __attribute__((weak));
+
 static long lx_ioctl(struct abi_ctx *ctx, const struct abi_call *c)
 {
+	if (net_linux_ioctl) {
+		long rc = net_linux_ioctl(ctx, c);
+
+		if (rc != -MERR_NOTSOCK)
+			return rc;
+	}
 	static const u16 winsize[4] = { 25, 80, 0, 0 };
 	u64 size;
 	bool tty = false;
@@ -715,6 +725,8 @@ static const struct abi_sysent *linux_lookup(const struct abi_call *c)
 {
 	if (c->nr < ARRAY_SIZE(linux_sysent) && linux_sysent[c->nr].fn)
 		return &linux_sysent[c->nr];
+	if (net_linux_lookup)
+		return net_linux_lookup(c->nr);
 	return NULL;
 }
 

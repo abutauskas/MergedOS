@@ -28,6 +28,7 @@
 #define DATA_TRIES 8u
 
 static void tcp_output(struct nsock *s);
+static void drop_bufs(struct nsock *s);
 
 static void seg_out(struct nstack *ns, u32 src, u32 dst, u16 sport, u16 dport, u32 seq, u32 ack,
 		    u8 flags, u16 win, const u8 *d1, u32 n1, const u8 *d2, u32 n2, bool mssopt)
@@ -336,6 +337,9 @@ void tcp_close(struct nsock *s)
 	case TS_FIN2:
 		s->tw_deadline = s->ns->now + FIN2_MS;
 		return;
+	case TS_TIMEWAIT:
+		drop_bufs(s);
+		return;
 	default:
 		return;
 	}
@@ -538,8 +542,20 @@ static struct nsock *tcp_find(struct nstack *ns, u32 dst, u16 dport, u32 src, u1
 	return l;
 }
 
+/* A TIME_WAIT orphan keeps only its 4-tuple: give the buffers back. */
+static void drop_bufs(struct nsock *s)
+{
+	if (!s->released)
+		return;
+	mos_free(s->sbuf);
+	mos_free(s->rbuf);
+	s->sbuf = s->rbuf = NULL;
+	s->slen = s->rlen = 0;
+}
+
 static void enter_timewait(struct nsock *s)
 {
+	drop_bufs(s);
 	s->state = TS_TIMEWAIT;
 	s->deadline = 0;
 	s->tw_deadline = s->ns->now + TW_MS;

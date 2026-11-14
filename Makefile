@@ -94,6 +94,8 @@ KERNEL_C := \
 	kernel/ata.c \
 	kernel/ahci.c \
 	kernel/net/netdev.c \
+	kernel/net/sockets.c \
+	kernel/net/sock_linux.c \
 	kernel/net/virtio_net.c \
 	kernel/net/e1000.c \
 	kernel/kmain.c \
@@ -225,6 +227,13 @@ $(BUILD)/guest/proctest.linux: src/guest/proctest.c
 		-fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables \
 		-fno-builtin -s -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $<
 GUEST_BINS += $(BUILD)/guest/proctest.linux
+
+$(BUILD)/guest/nettest.linux: src/guest/nettest.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -Os -static -nostdlib -ffreestanding -fno-pic -no-pie \
+		-fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables \
+		-fno-builtin -s -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $<
+GUEST_BINS += $(BUILD)/guest/nettest.linux
 
 $(eval $(call GUEST_RULE,hello.linux,hello_linux.S))
 $(eval $(call GUEST_RULE,hello.freebsd,hello_freebsd.S))
