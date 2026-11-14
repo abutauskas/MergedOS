@@ -46,7 +46,7 @@
 #define RS       8
 
 #define BUF      2048
-#define RX_N     32
+#define RX_N     16
 #define TX_N     8
 
 struct rxd {
@@ -68,7 +68,7 @@ static struct e1000 {
 	struct rxd *rx;
 	struct txd *tx;
 	u8 *rxbuf, *txbuf;
-	u64 rxphys, txphys;
+	u64 rxphys, txphys, ringphys;
 	u32 rx_next, tx_tail;
 	struct netdev dev;
 } e;
@@ -118,6 +118,26 @@ static int e1000_poll(struct netdev *d, struct nstack *ns)
 	return n;
 }
 
+static void e1000_close(struct netdev *d)
+{
+	(void)d;
+	wr(R_RCTL, 0);
+	wr(R_TCTL, 0);
+	wr(R_CTRL, rd(R_CTRL) | CTRL_RST);
+	net_dma_free(e.ringphys, 1);
+	net_dma_free(e.rxphys, RX_N * BUF / 4096);
+	net_dma_free(e.txphys, TX_N * BUF / 4096);
+	memset(&e, 0, sizeof(e));
+}
+
+bool e1000_present(void)
+{
+	static const u16 ids[] = { 0x100E, 0x100F, 0x1004, 0x1019, 0x1010 };
+	u8 b, d, f;
+
+	return net_pci_find(0x8086, ids, ARRAY_SIZE(ids), &b, &d, &f);
+}
+
 struct netdev *e1000_probe(void)
 {
 	/* 82540EM, 82545EM (copper), 82543GC, 82541, 82544 */
@@ -133,6 +153,7 @@ struct netdev *e1000_probe(void)
 	if ((bar0 & 1) || !(bar0 & ~0xFu) || (bar0 & ~0xFu) >= DMAP_LIMIT - 0x20000)
 		return NULL;
 	pci_write(bus, dev, fn, 0x04, (pci_read(bus, dev, fn, 0x04) & 0xFFFF) | 0x6);  /* MMIO + bus master */
+	memset(&e, 0, sizeof(e));
 	e.mmio = phys_to_virt(bar0 & ~0xFu);
 
 	wr(R_IMC, 0xFFFFFFFFu);
@@ -147,6 +168,7 @@ struct netdev *e1000_probe(void)
 	e.txbuf = net_dma_alloc(TX_N * BUF / 4096, &e.txphys);
 	if (!ring || !e.rxbuf || !e.txbuf)
 		return NULL;
+	e.ringphys = ringphys;
 	e.rx = (struct rxd *)ring;
 	e.tx = (struct txd *)(ring + 1024);
 	for (int i = 0; i < RX_N; i++)
@@ -183,6 +205,7 @@ struct netdev *e1000_probe(void)
 	mos_strlcpy(e.dev.name, "e1000", sizeof(e.dev.name));
 	e.dev.send = e1000_send;
 	e.dev.poll = e1000_poll;
+	e.dev.close = e1000_close;
 	e.dev.priv = &e;
 	return &e.dev;
 }

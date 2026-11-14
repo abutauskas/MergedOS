@@ -23,7 +23,6 @@
 struct nstack net_stack;
 bool net_present;
 static struct netdev *nic;
-static bool poller_started;
 
 u64 net_ms(void)
 {
@@ -127,41 +126,93 @@ static void netd(void *arg)
 	}
 }
 
-void net_start_poller(void)
+static int netd_id = -1;
+static bool nic_up;
+static int nic_kind;                            /* 0 none, 1 virtio-net, 2 e1000 */
+
+void net_dma_free(u64 phys, u32 pages)
 {
-	if (poller_started)
+	if (pages == 1)
+		pmm_free(phys);
+	else
+		pmm_free_contig(phys, pages);
+}
+
+static void netd_start(void)
+{
+	if (netd_id >= 0)
 		return;
-	poller_started = true;
-	if (thread_create(netd, NULL, "netd") < 0)
+	netd_id = thread_create(netd, NULL, "netd");
+	if (netd_id < 0)
 		panic("net: cannot start netd");
 }
 
-/* The stack always exists (loopback works without an adapter); netd starts when needed. */
+/* Bring the adapter up (rings, buffers, netd, DHCP) the first time it is needed. */
+static void nic_bringup(void)
+{
+	if (nic_up || !nic_kind)
+		return;
+	nic = nic_kind == 1 ? virtio_net_probe() : e1000_probe();
+	if (!nic)
+		return;
+	nic_up = true;
+	net_stack.dev = nic;
+	memset(net_stack.arp, 0, sizeof(net_stack.arp));
+	{
+		u64 f = irq_save();
+
+		net_enter();
+		ns_dhcp_start(&net_stack);
+		irq_restore(f);
+	}
+	netd_start();
+	kprintf("[net] %s up, mac %02x:%02x:%02x:%02x:%02x:%02x, polled; DHCP started\n", nic->name,
+		nic->mac[0], nic->mac[1], nic->mac[2], nic->mac[3], nic->mac[4], nic->mac[5]);
+	/* A program that opens a socket expects a configured network: wait for the lease. */
+	for (int t = 0; t < 500 && net_stack.dhcp_state != DHCP_BOUND; t++)
+		thread_sleep_ms(10);
+}
+
+void net_start_poller(void)
+{
+	nic_bringup();
+	netd_start();                           /* TCP timers run on loopback too */
+}
+
+void net_shutdown(void)
+{
+	u64 f = irq_save();
+
+	if (netd_id >= 0) {
+		thread_kill(thread_slot(netd_id));
+		netd_id = -1;
+	}
+	if (nic_up) {
+		nic->close(nic);
+		nic = NULL;
+		nic_up = false;
+		net_stack.dev = NULL;
+		net_stack.ip = net_stack.mask = net_stack.gw = 0;
+		net_stack.dhcp_state = DHCP_OFF;
+	}
+	irq_restore(f);
+}
+
+/* The stack always exists (loopback works without an adapter). A NIC costs nothing until used. */
 void net_init(void)
 {
 	ns_init(&net_stack, NULL);
 	net_stack.wake = net_wake;
 	net_stack.configured = net_configured;
-	nic = virtio_net_probe();
-	if (!nic)
-		nic = e1000_probe();
-	if (!nic) {
+	nic_kind = virtio_net_present() ? 1 : e1000_present() ? 2 : 0;
+	net_present = nic_kind != 0;
+	if (!nic_kind) {
 		kprintf("[net] no supported network adapter (virtio-net, e1000); loopback only\n");
 		return;
 	}
-	net_present = true;
-	net_stack.dev = nic;
-	net_enter();
 	vfs_write_file("etc/hosts", "127.0.0.1 localhost\n", 20);
-	{
-		u64 f = irq_save();
-
-		ns_dhcp_start(&net_stack);
-		irq_restore(f);
-	}
-	net_start_poller();
-	kprintf("[net] %s up, mac %02x:%02x:%02x:%02x:%02x:%02x, polled; DHCP started\n", nic->name,
-		nic->mac[0], nic->mac[1], nic->mac[2], nic->mac[3], nic->mac[4], nic->mac[5]);
+	kprintf("[net] %s adapter found; it is brought up when the first socket opens\n",
+		nic_kind == 1 ? "virtio-net" : "e1000");
 }
 
 /* ---- boot self-test ----------------------------------------------------------------- */
@@ -245,7 +296,7 @@ static bool dns_query(u32 server, const char *name, u32 *rcode, u32 *answers)
 	return ok;
 }
 
-int net_selftest(void)
+static int net_selftest_run(void)
 {
 	int bad = 0;
 	u32 rcode = 0, answers = 0;
@@ -255,6 +306,7 @@ int net_selftest(void)
 		kprintf("[net] self-test skipped: no adapter\n");
 		return 0;
 	}
+	nic_bringup();
 	if (!wait_for(is_bound, 8000)) {
 		kprintf("[net] DHCP: no lease within 8 s (no DHCP server on this network?)\n");
 		return 0;                       /* an adapter on an unconnected network is not a failure */
@@ -314,6 +366,30 @@ int net_selftest(void)
 		kprintf("%s", rep.out);
 		kprintf("[net] bin/nettest.linux: exit %d  %s\n", rc ? rc : rep.exit_code, ok ? "OK" : "FAILED");
 		bad += !ok;
+	}
+	return bad;
+}
+
+static u64 net_free_frames(void)
+{
+	struct pmm_stats st;
+
+	pmm_get_stats(&st);
+	return st.free_frames;
+}
+
+/* Runs the checks, reports what the network costs while in use, then releases it all. */
+int net_selftest(void)
+{
+	u64 before = net_free_frames();
+	int bad = net_selftest_run();
+
+	if (net_present) {
+		kprintf("[net] in use: %llu KiB of frames (NIC rings and buffers, netd stack, socket buffers)\n",
+			(unsigned long long)(before - net_free_frames()) * 4);
+		net_shutdown();
+		kprintf("[net] adapter released after the self-test: %llu KiB in use\n",
+			(unsigned long long)(before - net_free_frames()) * 4);
 	}
 	return bad;
 }

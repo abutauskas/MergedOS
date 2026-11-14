@@ -32,8 +32,8 @@
 #define ST_OK      4
 #define HDR        10
 #define BUF        2048
-#define RX_BUFS    32
-#define TX_SLOTS   8
+#define RX_BUFS    16
+#define TX_SLOTS   4
 #define VRING_WRITE 2
 
 struct vdesc {
@@ -44,6 +44,8 @@ struct vdesc {
 
 struct vq {
 	u16 size, last_used, avail_idx;
+	u64 phys;
+	u32 pages;
 	struct vdesc *desc;
 	volatile u16 *avail;            /* flags, idx, ring[] */
 	volatile u8 *used;              /* flags(2), idx(2), {id(4), len(4)}[] */
@@ -82,6 +84,8 @@ static bool vq_setup(struct vnet *v, struct vq *q, u16 index)
 	mem = net_dma_alloc(pages, &phys);
 	if (!mem)
 		return false;
+	q->phys = phys;
+	q->pages = pages;
 	q->desc = (struct vdesc *)mem;
 	q->avail = (volatile u16 *)(mem + avail_off);
 	q->used = mem + used_off;
@@ -163,12 +167,34 @@ static int vnet_poll(struct netdev *d, struct nstack *ns)
 	return n;
 }
 
+static void vnet_close(struct netdev *d)
+{
+	struct vnet *v = d->priv;
+
+	outb(v->io + R_STATUS, 0);                              /* reset: the device stops DMA */
+	net_dma_free(v->rx.phys, v->rx.pages);
+	net_dma_free(v->tx.phys, v->tx.pages);
+	net_dma_free(v->rxphys, RX_BUFS * BUF / 4096);
+	net_dma_free(v->txphys, TX_SLOTS * BUF / 4096);
+	memset(v, 0, sizeof(*v));
+}
+
+bool virtio_net_present(void)
+{
+	static const u16 ids[] = { VIRTIO_NET_LEGACY };
+	u8 b, d, f;
+
+	return net_pci_find(VIRTIO_VENDOR, ids, 1, &b, &d, &f);
+}
+
 struct netdev *virtio_net_probe(void)
 {
 	static const u16 ids[] = { VIRTIO_NET_LEGACY };
 	struct vnet *v = &vn;
 	u8 bus, dev, fn;
 	u32 bar0, feat;
+
+	memset(v, 0, sizeof(*v));
 
 	if (!net_pci_find(VIRTIO_VENDOR, ids, 1, &bus, &dev, &fn))
 		return NULL;
@@ -204,6 +230,7 @@ struct netdev *virtio_net_probe(void)
 	mos_strlcpy(v->dev.name, "virtio0", sizeof(v->dev.name));
 	v->dev.send = vnet_send;
 	v->dev.poll = vnet_poll;
+	v->dev.close = vnet_close;
 	v->dev.priv = v;
 	return &v->dev;
 }

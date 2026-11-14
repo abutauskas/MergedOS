@@ -87,9 +87,11 @@ Implemented as specified, all in `make test`:
 - Stack, DHCP, resolv.conf (`/etc/resolv.conf` and `/etc/hosts` are
   single-file ramfs mounts; the rest of `/etc` stays read-only), loopback,
   AF_INET sockets, host tests with a lossy two-stack wire.
-- Footprint: kernel footprint 872 KiB at the end of the boot test (base 664):
-  about 100 KiB of NIC rings and buffers, 16 KiB netd stack, the stack code
-  and static socket tables.
+- Footprint (boot test, base a93e9f9 measures 708 KiB): 748 KiB without a
+  NIC, 764 KiB with one present but unused. The adapter's rings, buffers and
+  the netd thread (80 KiB with virtio-net, 68 KiB with e1000, 16 RX buffers
+  of 2 KiB) are allocated when the first socket opens and the first `socket()`
+  waits for the DHCP lease. The self-test releases them again at the end.
 
 Not done: IPv6, IP fragmentation/reassembly, TCP window scaling/SACK/
 timestamps, delayed ACK, keep-alive probes, SO_RCVTIMEO/SNDTIMEO (accepted,

@@ -8,6 +8,10 @@ struct netdev *virtio_net_probe(void);          /* legacy (transitional) PCI dev
 struct netdev *e1000_probe(void);               /* Intel 8254x family, QEMU's default NIC */
 bool net_pci_find(u16 vendor, const u16 *devices, int ndev, u8 *bus, u8 *dev, u8 *fn);
 void *net_dma_alloc(u32 pages, u64 *phys);      /* zeroed contiguous frames, direct-mapped */
+void net_dma_free(u64 phys, u32 pages);
+bool virtio_net_present(void);
+bool e1000_present(void);
+void net_shutdown(void);                        /* NIC reset, memory and netd given back */
 
 extern struct nstack net_stack;
 extern bool net_present;

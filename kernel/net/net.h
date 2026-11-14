@@ -13,12 +13,12 @@
 
 #define NET_MTU      1500
 #define NET_FRAME    (14 + NET_MTU)
-#define NET_NSOCK    48
+#define NET_NSOCK    32
 #define NET_ARP_N    16
 #define NET_LO_N     16
 #define NET_UDPQ_MAX 16
 #define NET_OOO_MAX  16
-#define NET_BUF_DEF  32768
+#define NET_BUF_DEF  16384
 #define NET_BUF_MAX  65535
 #define NET_BUF_MIN  2048
 
@@ -51,6 +51,7 @@ struct netdev {
 	u8 mac[6];
 	int (*send)(struct netdev *dev, const void *frame, u32 len);   /* 0 or -MERR_* */
 	int (*poll)(struct netdev *dev, struct nstack *ns);            /* frames delivered */
+	void (*close)(struct netdev *dev);                             /* reset, free DMA memory */
 	void *priv;
 };
 
