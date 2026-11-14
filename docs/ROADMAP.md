@@ -55,7 +55,7 @@ Still open:
 
 - Native drivers: AHCI/NVMe, virtio, USB HID, framebuffer
 - Linux driver-API shim and a first GPL driver module
-- Port of the FreeBSD network stack; sockets for all personalities
+- Own TCP/IP stack (docs/NETWORKING.md, replaces the FreeBSD port): done for virtio-net/e1000, IPv4, AF_INET on the Linux personality; open: IPv6, other personalities
 - UEFI boot
 
 ## M6 - Package store

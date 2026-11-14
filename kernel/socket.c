@@ -89,8 +89,19 @@ static void sf_release(struct file *f)
 	kfree(s);
 }
 
+static long sf_ioctl(struct task *t, struct file *f, u32 cmd, u64 arg)
+{
+	struct socket *s = f->priv;
+	int n;
+
+	if (cmd != 0x541B || !s->ops->avail)
+		return -MERR_NOTTY;
+	n = (int)s->ops->avail(s);
+	return uaccess_copy_out(t, arg, &n, 4) ? -MERR_FAULT : 0;
+}
+
 static const struct fops sock_fops = {
-	.read = sf_read, .write = sf_write, .poll = sf_poll, .release = sf_release,
+	.read = sf_read, .write = sf_write, .poll = sf_poll, .release = sf_release, .ioctl = sf_ioctl,
 	.mode = S_IFSOCK | 0777,
 };
 
@@ -287,9 +298,15 @@ LXFN(lx_getpeername) { return name_call(ctx, c, true); }
 
 LXFN(lx_setsockopt)
 {
+	u8 val[16] = { 0 };
+	u64 len = MOS_MIN(A(4), (u64)sizeof(val));
+
 	GETSOCK(A(0));
-	(void)s;
-	return 0;                               /* buffer sizes, reuse, keepalive: accepted */
+	if (!s->ops->setsockopt)
+		return 0;                       /* buffer sizes, reuse, keepalive: accepted */
+	if (len && uaccess_copy_in(TASK, val, A(3), (size_t)len))
+		return -MERR_FAULT;
+	return s->ops->setsockopt(s, (int)A(1), (int)A(2), val, (u32)len);
 }
 
 LXFN(lx_getsockopt)
@@ -298,6 +315,18 @@ LXFN(lx_getsockopt)
 	u8 cred[12] = { 0 };
 
 	GETSOCK(A(0));
+	if (s->ops->getsockopt) {
+		u8 ov[16] = { 0 };
+		long rc;
+
+		if (uaccess_copy_in(TASK, &len, A(4), 4))
+			return -MERR_FAULT;
+		len = MOS_MIN(len, (u32)sizeof(ov));
+		rc = s->ops->getsockopt(s, (int)A(1), (int)A(2), ov, &len);
+		if (rc)
+			return rc;
+		return uaccess_copy_out(TASK, A(3), ov, len) || uaccess_copy_out(TASK, A(4), &len, 4) ? -MERR_FAULT : 0;
+	}
 	if (A(1) == SOL_SOCKET) {
 		switch (A(2)) {
 		case 3:  val = (u32)s->type; break;                     /* SO_TYPE */
@@ -586,4 +615,5 @@ LXFN(lx_sendmmsg)
 void socket_init(void)
 {
 	unix_init();
+	inet_init();
 }

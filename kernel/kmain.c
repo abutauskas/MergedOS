@@ -16,6 +16,7 @@
  *   splash=<ms>       how long the boot splash stays up (default 500, 0 = no hold)
  *   selftest_install  with selftest: install onto IDE disk 0 without asking (test rigs only)
  */
+#include "kernel/net/netdrv.h"
 #include <mergedos/kernel.h>
 #include <mergedos/compat.h>
 #include <mergedos/boot.h>
@@ -421,6 +422,7 @@ void kmain(u32 mb_magic, u32 mb_info)
 	splash_show(20);
 	hwprobe_print(&hw);
 	storage_init();
+	net_init();
 	splash_show(60);
 	if (setup_load_config(&install))
 		kprintf("[setup] saved setup found on disk: user \"%s\", language %s, "
@@ -471,6 +473,7 @@ void kmain(u32 mb_magic, u32 mb_info)
 		kprintf("[de] selftest: session start skipped for %s\n", de_profile(de)->title);
 		failures += monitor_selftest();
 		failures += sched_selftest();
+		failures += net_selftest();
 		{
 			int bad = desktop_selftest();
 

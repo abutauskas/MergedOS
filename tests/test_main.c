@@ -172,6 +172,7 @@ int main(void)
 		{ "ramfs + process system calls (Linux / FreeBSD routing)", test_ramfs },
 		{ "wayland (wire codec, compositor, socketpair client, fuzz)", test_wayland },
 		{ "Darwin: XNU calls, Mach-O dynamic plans, imports, .app report", test_darwin },
+		{ "network stack (ARP/IP/UDP/TCP/DHCP, lossy wire, fuzz)", test_net },
 	};
 
 	for (size_t i = 0; i < ARRAY_SIZE(suites); i++) {

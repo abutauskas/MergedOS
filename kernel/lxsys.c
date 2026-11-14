@@ -254,6 +254,8 @@ LXFN(x_ioctl)
 		{ int on = 0; uaccess_copy_in(TASK, &on, A(2), 4); f->flags = on ? f->flags | VFS_O_NONBLOCK : f->flags & ~VFS_O_NONBLOCK; }
 		return 0;
 	case 0x541B:                            /* FIONREAD */
+		if (f->type == F_OPS && f->ops->ioctl)
+			return f->ops->ioctl(TASK, f, (u32)A(1), A(2));
 		{ int n = f->type == F_PIPE ? (int)f->pipe->count : 0; uaccess_copy_out(TASK, A(2), &n, 4); }
 		return 0;
 	default:

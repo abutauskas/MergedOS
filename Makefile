@@ -48,6 +48,8 @@ SHARED_C := \
 	abi_dispatch/personality_xnu.c \
 	abi_dispatch/personality_nt.c \
 	kernel/ramfs.c \
+	kernel/net/netcore.c \
+	kernel/net/tcp.c \
 	hardware_probe/hw_classify.c \
 	de_selector/de_policy.c \
 	pkg_translate/tar.c \
@@ -91,6 +93,10 @@ KERNEL_C := \
 	kernel/deskrun.c \
 	kernel/ata.c \
 	kernel/ahci.c \
+	kernel/net/netdev.c \
+	kernel/net/sockets.c \
+	kernel/net/virtio_net.c \
+	kernel/net/e1000.c \
 	kernel/kmain.c \
 	kernel/console.c \
 	kernel/printk.c \
@@ -130,7 +136,7 @@ KERNEL_S := \
 	kernel/arch/x86_64/entry.S \
 	kernel/initrd_blob.S
 
-TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c tests/test_darwin.c \
+TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c tests/test_darwin.c tests/test_net.c \
 	tests/test_wayland.c src/wayland/wl_wire.c src/wayland/wl_comp.c src/wayland/wl_keymap.c
 
 KOBJS := $(patsubst %,$(BUILD)/obj/%.o,$(basename $(KERNEL_S) $(KERNEL_C) $(SHARED_C) $(UI_C)))
@@ -227,6 +233,13 @@ $(BUILD)/guest/proctest.linux: src/guest/proctest.c
 		-fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables \
 		-fno-builtin -s -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $<
 GUEST_BINS += $(BUILD)/guest/proctest.linux
+
+$(BUILD)/guest/nettest.linux: src/guest/nettest.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -Os -static -nostdlib -ffreestanding -fno-pic -no-pie \
+		-fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables \
+		-fno-builtin -s -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $<
+GUEST_BINS += $(BUILD)/guest/nettest.linux
 
 # /dev/mwm end to end (driven by tools/e2e-test.py with the emulated mouse and keyboard).
 $(BUILD)/guest/mwmtest.linux: src/guest/mwmtest.c kernel/include/mergedos/mwm.h

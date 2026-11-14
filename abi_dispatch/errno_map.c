@@ -66,6 +66,8 @@ static const u8 linux_errno[MERR_MAX] = {
 	[MERR_SHUTDOWN] = 108,
 	[MERR_MLINK] = 31,
 	[MERR_NFILE] = 23,
+	[MERR_NETUNREACH] = 101,
+	[MERR_HOSTUNREACH] = 113,
 };
 
 static const u8 bsd_errno[MERR_MAX] = {
@@ -125,6 +127,8 @@ static const u8 bsd_errno[MERR_MAX] = {
 	[MERR_SHUTDOWN] = 58,
 	[MERR_MLINK] = 31,
 	[MERR_NFILE] = 23,
+	[MERR_NETUNREACH] = 51,
+	[MERR_HOSTUNREACH] = 65,
 };
 
 static const u32 nt_status[MERR_MAX] = {

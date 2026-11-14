@@ -506,6 +506,7 @@ def build_tree(guest_dir, src_dir):
         "bin/hello.exe": (read(os.path.join(guest_dir, "hello.exe")), 0o755),
         "bin/spin.linux": (read(os.path.join(guest_dir, "spin.linux")), 0o755),
         "bin/proctest.linux": (read(os.path.join(guest_dir, "proctest.linux")), 0o755),
+        "bin/nettest.linux": (read(os.path.join(guest_dir, "nettest.linux")), 0o755),
         "bin/cat.linux": (read(os.path.join(guest_dir, "proctest.linux")), 0o755),
         "bin/mwmtest.linux": (read(os.path.join(guest_dir, "mwmtest.linux")), 0o755),
         "bin/wlclient.linux": (read(os.path.join(guest_dir, "wlclient.linux")), 0o755),
@@ -517,6 +518,8 @@ def build_tree(guest_dir, src_dir):
         "pkg/hello-1.0-r0.apk": (make_apk(elf), 0o644),
         "pkg/hello-1.0-1-x86_64.pkg.tar.gz": (make_pacman(elf), 0o644),
         "etc/motd": (MOTD, 0o644),
+        "etc/resolv.conf": (b"", 0o644),        # placeholders, overlaid by the writable file mounts
+        "etc/hosts": (b"127.0.0.1 localhost\n", 0o644),
         "etc/mergedfence/default.merged": (fence_default(), 0o644),
     }
 

@@ -43,6 +43,10 @@ struct sock_ops {
 	u32  (*poll)(struct socket *s, u32 events);
 	long (*shutdown)(struct socket *s, int how);
 	long (*getname)(struct socket *s, bool peer, u8 *addr, u32 *len);
+	/* Optional. getsockopt: `*len` is the capacity of `val` on entry, the size on return. */
+	long (*setsockopt)(struct socket *s, int level, int opt, const u8 *val, u32 len);
+	long (*getsockopt)(struct socket *s, int level, int opt, u8 *val, u32 *len);
+	long (*avail)(struct socket *s);        /* FIONREAD: bytes readable now */
 };
 
 struct socket {
@@ -56,5 +60,6 @@ void sock_register(const struct sock_ops *ops);
 /* A connected pair for socketpair() (family-specific, optional). */
 long unix_socketpair(struct socket *a, struct socket *b);
 void unix_init(void);
+void inet_init(void);                   /* kernel/net/sockets.c: registers AF_INET */
 
 #endif /* MERGEDOS_SOCKET_H */

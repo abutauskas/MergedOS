@@ -28,6 +28,11 @@ static struct {
 	struct rnode *root;
 } mounts[] = { { "tmp", NULL }, { "home/user", NULL }, { "run", NULL }, { "var", NULL } };
 
+/* /etc/resolv.conf and /etc/hosts are writable single files (DHCP fills them in); the rest
+ * of /etc stays in the read-only ramdisk. */
+static const char *const etc_names[2] = { "etc/resolv.conf", "etc/hosts" };
+static struct rnode *etc_nodes[2];
+
 static struct rnode *anon_root;          /* unlinked files (memfd): not reachable by path */
 int fg_pgid;
 bool vfs_debug;
@@ -38,6 +43,13 @@ void vfs_init(void)
 	for (unsigned i = 0; i < ARRAY_SIZE(mounts); i++)
 		mounts[i].root = ramfs_new_root();
 	anon_root = ramfs_new_root();
+	for (unsigned i = 0; i < 2; i++) {
+		etc_nodes[i] = ramfs_new_root();
+		if (etc_nodes[i]) {
+			etc_nodes[i]->dir = false;
+			etc_nodes[i]->mode = 0644;
+		}
+	}
 	socket_init();
 }
 
@@ -691,6 +703,14 @@ static void locate(const char *canon, struct loc *l)
 		l->kind = L_VIRT;
 		return;
 	}
+	for (unsigned i = 0; i < 2; i++)
+		if (etc_nodes[i] && !strcmp(canon, etc_names[i])) {
+			l->kind = L_RAMFS;
+			l->node = etc_nodes[i];
+			l->root = etc_nodes[i];
+			l->rest = "";
+			return;
+		}
 	l->root = mount_of(canon, &l->rest, &l->mnt);
 	if (l->root) {
 		l->kind = ramfs_lookup(l->root, l->rest, &l->node) ? L_NONE : L_RAMFS;
@@ -922,6 +942,17 @@ long vfs_open_at(struct task *t, int dirfd, u64 upath, u32 flags, u32 mode)
 long msys_open(struct task *t, u64 upath, u32 flags)
 {
 	return vfs_open_at(t, VFS_AT_FDCWD, upath, flags, 0666);
+}
+
+/* Replace the contents of /etc/resolv.conf or /etc/hosts. */
+int vfs_write_file(const char *path, const void *data, size_t len)
+{
+	for (unsigned i = 0; i < 2; i++)
+		if (etc_nodes[i] && !strcmp(path, etc_names[i])) {
+			ramfs_truncate(etc_nodes[i], 0);
+			return ramfs_write(etc_nodes[i], 0, data, len) < 0 ? -MERR_NOMEM : 0;
+		}
+	return -MERR_ACCES;
 }
 
 int vfs_image(const char *path, const u8 **data, size_t *size)

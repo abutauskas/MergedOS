@@ -91,6 +91,7 @@ struct kstat {
 #define S_IFIFO  0010000
 
 void vfs_init(void);
+int  vfs_write_file(const char *path, const void *data, size_t len);   /* etc/resolv.conf, etc/hosts */
 struct file *file_get(struct file *f);          /* +1 reference */
 void file_put(struct file *f);                  /* -1, releases on the last */
 struct file *console_file(void);                /* a new reference */
