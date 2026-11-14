@@ -17,6 +17,10 @@ struct rnode {
 	char name[RAMFS_NAME_MAX];
 	bool dir;
 	bool unlinked;                  /* gone from its directory, still open */
+	bool symlink;                   /* data holds the link target */
+	void *sock;                     /* a bound socket (AF_UNIX), see unix.c */
+	u32 mode;                       /* permission bits */
+	u64 atime, mtime, ctime;        /* nanoseconds, set by the caller */
 	u32 opens;
 	u64 ino;
 	struct rnode *parent, *child, *next;
@@ -34,6 +38,8 @@ int  ramfs_rename(struct rnode *root, const char *from, const char *to);
 long ramfs_read(const struct rnode *n, u64 pos, void *buf, u64 len);
 long ramfs_write(struct rnode *n, u64 pos, const void *buf, u64 len);
 int  ramfs_truncate(struct rnode *n, u64 size);
+/* Keep the data in page-aligned frames of at least `size` bytes (for shared mappings). */
+int  ramfs_pin(struct rnode *n, u64 size);
 /* The index-th entry of a directory, or NULL past the end. */
 struct rnode *ramfs_entry(const struct rnode *dir, u64 index);
 void ramfs_open(struct rnode *n);

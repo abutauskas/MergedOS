@@ -158,7 +158,8 @@ static long lx_mmap(struct abi_ctx *ctx, const struct abi_call *c)
 {
 	u32 prot = ((c->arg[2] & 1) ? LXV_R : 0) | ((c->arg[2] & 2) ? LXV_W : 0) |
 		   ((c->arg[2] & 4) ? LXV_X : 0);
-	u32 flags = (u32)c->arg[3] & (MSYS_MAP_FIXED | MSYS_MAP_ANON | MSYS_MAP_FIXED_NOREPLACE);
+	u32 flags = (u32)c->arg[3] & (MSYS_MAP_SHARED | MSYS_MAP_PRIVATE | MSYS_MAP_FIXED |
+				     MSYS_MAP_ANON | MSYS_MAP_FIXED_NOREPLACE);
 
 	return msys_mmap(ctx->task, c->arg[0], c->arg[1], prot, flags, (int)c->arg[4], c->arg[5]);
 }
@@ -166,6 +167,9 @@ static long lx_mmap(struct abi_ctx *ctx, const struct abi_call *c)
 static long lx_mprotect(struct abi_ctx *ctx, const struct abi_call *c)
 {
 	u32 prot = ((c->arg[2] & 2) ? MSYS_PROT_W : 0) | ((c->arg[2] & 4) ? MSYS_PROT_X : 0);
+
+	if (!(c->arg[2] & 7))
+		prot = MSYS_PROT_NONE;
 
 	return msys_protect(ctx->task, c->arg[0], c->arg[1], prot);
 }
@@ -711,8 +715,14 @@ static void linux_decode(const struct syscall_frame *f, struct abi_call *c)
 	c->usp = f->rsp;
 }
 
+const struct abi_sysent *lx_ext_lookup(u64 nr);
+
 static const struct abi_sysent *linux_lookup(const struct abi_call *c)
 {
+	const struct abi_sysent *e = lx_ext_lookup(c->nr);
+
+	if (e)
+		return e;
 	if (c->nr < ARRAY_SIZE(linux_sysent) && linux_sysent[c->nr].fn)
 		return &linux_sysent[c->nr];
 	return NULL;

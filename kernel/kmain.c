@@ -33,6 +33,9 @@
 #include "de_selector/de_selector.h"
 
 void kmain(u32 mb_magic, u32 mb_info);
+u32 pmm_ref_entries(void);
+int wine_boot_check(void);
+int lxtest_boot_check(void);              /* kernel/winetest.c */
 
 static struct hw_profile hw;
 static struct install_config install = { .desktop = DESKTOP_AUTO };
@@ -286,8 +289,6 @@ static int abi_boot_check(void)
 		failures++;
 	}
 	{
-		bool warm = false;
-
 		static const char *const cmd_args[] = { "/c", "echo", "cmd-says-hi", NULL };
 		static const char *const reg_add[] = { "add", "HKCU\\Software\\MergedOS", "/v", "Greeting",
 						       "/t", "REG_SZ", "/d", "reg-says-hi", "/f", NULL };
@@ -327,13 +328,10 @@ static int abi_boot_check(void)
 				rep.pages, rc ? rc : rep.exit_code, ok ? "OK" : "FAILED");
 			failures += !ok;
 			/*
-			 * The first NT program leaves state in the ramfs (the registry
-			 * hive under /tmp/.reg, user files): re-baseline once it ran.
+			 * NT programs leave state in the ramfs (the registry hive under
+			 * /tmp/.reg grows, user files): re-baseline after each.
 			 */
-			if (!warm) {
-				warm = true;
-				pmm_get_stats(&before);
-			}
+			pmm_get_stats(&before);
 		}
 	}
 	/* Several processes at once: fork, exec, wait, pipes, threads, signals, ramfs. */
@@ -356,10 +354,16 @@ static int abi_boot_check(void)
 	}
 	pmm_get_stats(&after);
 	if (after.free_frames != before.free_frames) {
-		kprintf("[abi] FAILED: %lld frames leaked by exec/exit\n",
-			(long long)(before.free_frames - after.free_frames));
+		kprintf("[abi] FAILED: %lld frames leaked by exec/exit (%u shared-frame entries)\n",
+			(long long)(before.free_frames - after.free_frames), pmm_ref_entries());
 		failures++;
 	}
+	failures += lxtest_boot_check();
+	/* Wine's own Linux stack (needs its module and RAM; see docs/WINE_STACK.md). */
+	if (after.usable_frames * 4 >= 400 * 1024)
+		(void)wine_boot_check();        /* experimental: reported, not yet counted (docs/WINE_STACK.md) */
+	else
+		kprintf("[wine] wine64 loader     skipped (needs 400 MiB of RAM)\n");
 	return failures;
 }
 
@@ -403,6 +407,15 @@ void kmain(u32 mb_magic, u32 mb_info)
 	initrd_init();
 	vfs_init();
 
+	if (boot_cmdline_get("winetest", NULL, 0)) {    /* development: only Wine, then power off */
+		int bad = lxtest_boot_check();
+
+		if (!boot_cmdline_get("nowine", NULL, 0))
+			bad += wine_boot_check();
+
+		kprintf("\nMERGEDOS-WINETEST: %s\n", bad ? "FAIL" : "PASS");
+		machine_poweroff(bad ? 0x11 : 0x10);
+	}
 	hwprobe_run(&hw);
 	graphics_init();
 	splash_show(20);

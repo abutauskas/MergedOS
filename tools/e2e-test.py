@@ -75,7 +75,7 @@ class Machine:
                 return
             if time.time() > deadline or (self.proc.poll() is not None and not self.sel.select(0)):
                 raise AssertionError(f"timed out waiting for {marker!r}; tail of log:\n"
-                                     + self.log[-600:].decode(errors="replace"))
+                                     + self.log[-1500:].decode(errors="replace"))
             if self.sel.select(0.2):
                 self.log += self.proc.stdout.read() or b""
 
@@ -89,7 +89,7 @@ class Machine:
         except subprocess.TimeoutExpired:
             self.proc.kill()
             raise AssertionError("machine did not stop; tail of log:\n"
-                                 + self.log[-600:].decode(errors="replace"))
+                                 + self.log[-1500:].decode(errors="replace"))
         self.log += self.proc.stdout.read() or b""
         return self.proc.returncode, self.log.decode(errors="replace")
 
@@ -158,6 +158,7 @@ def main():
         m.send("run /bin/mwmtest.linux" + ENTER)
         m.wait("mwmtest: window created")
         m.wait("[desk] app window content")
+        m.wait("\n")
         text = m.log.decode(errors="replace")
         cx, cy = map(int, re.search(r"\[desk\] app window content (\d+) (\d+)", text).groups())
         m.monitor("mouse_move %d %d" % (cx + 20 - (tx + 40), cy + 15 - (ty + 30)))

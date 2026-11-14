@@ -84,6 +84,7 @@ extern const struct abi_personality_ops abi_nt_ops;
 
 void abi_ctx_init(struct abi_ctx *ctx, enum abi_personality p, struct task *task);
 void abi_dispatch(struct abi_ctx *ctx, struct syscall_frame *f);
+void lx_trace(struct abi_ctx *ctx, const struct abi_call *c, long ret);     /* debug hook */
 const char *abi_personality_name(enum abi_personality p);
 const struct abi_personality_ops *abi_personality_ops(enum abi_personality p);
 
@@ -182,6 +183,7 @@ long msys_nanosleep(struct task *t, u64 ns);
 /* Add rights (MSYS_PROT_*) to pages that are already mapped; never removes any. */
 #define MSYS_PROT_W 0x2
 #define MSYS_PROT_X 0x4
+#define MSYS_PROT_NONE 0x8      /* with no other bit: PROT_NONE */
 long msys_protect(struct task *t, u64 addr, u64 len, u32 prot);
 
 /*

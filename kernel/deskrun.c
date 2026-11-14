@@ -412,6 +412,7 @@ static void app_event(u32 type, int handle, int x, int y, u32 code, u32 state)
 	if (ev_head - ev_tail > ARRAY_SIZE(evq))
 		ev_tail = ev_head - ARRAY_SIZE(evq);
 	thread_wake(&ev_head, 0, SCHED_MAX_THREADS);
+	poll_wake();
 }
 
 static const char *host_app_title(void *ctx, int win)
@@ -468,6 +469,35 @@ static bool app_alloc_buf(struct app_win *a, int w, int h)
 	return true;
 }
 
+static long mwm_read(bool nonblock, struct task *t, u64 ubuf, u64 len);
+static long mwm_write(struct task *t, u64 ubuf, u64 len);
+
+static long mwm_f_read(struct task *t, struct file *f, u64 ubuf, u64 len)
+{
+	return mwm_read((f->flags & VFS_O_NONBLOCK) != 0, t, ubuf, len);
+}
+
+static long mwm_f_write(struct task *t, struct file *f, u64 ubuf, u64 len)
+{
+	(void)f;
+	return mwm_write(t, ubuf, len);
+}
+
+static u32 mwm_f_poll(struct file *f, u32 events)
+{
+	(void)f;
+	return (ev_head != ev_tail ? POLLIN : 0) & events ? POLLIN : 0;
+}
+
+static void mwm_f_release(struct file *f)
+{
+	(void)f;
+	mwm_close();
+}
+
+const struct fops mwm_ops = { .read = mwm_f_read, .write = mwm_f_write, .poll = mwm_f_poll,
+			      .release = mwm_f_release, .mode = S_IFCHR | 0666 };
+
 long mwm_open(void)
 {
 	if (!running)
@@ -489,7 +519,7 @@ void mwm_close(void)
 	app_grab = 0;
 }
 
-long mwm_read(bool nonblock, struct task *t, u64 ubuf, u64 len)
+static long mwm_read(bool nonblock, struct task *t, u64 ubuf, u64 len)
 {
 	long done = 0;
 
@@ -513,7 +543,7 @@ long mwm_read(bool nonblock, struct task *t, u64 ubuf, u64 len)
 	return done;
 }
 
-long mwm_write(struct task *t, u64 ubuf, u64 len)
+static long mwm_write(struct task *t, u64 ubuf, u64 len)
 {
 	struct mwm_cmd c;
 	struct app_win *a;

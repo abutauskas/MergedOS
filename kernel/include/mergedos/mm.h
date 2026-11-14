@@ -44,7 +44,9 @@ struct pmm_stats {
 
 void pmm_init(const struct boot_info *bi);
 u64  pmm_alloc(void);               /* zeroed 4 KiB frame, 0 when out of memory */
-void pmm_free(u64 phys);
+void pmm_free(u64 phys);            /* drops a reference; frees with the last */
+void pmm_ref(u64 phys);             /* one more owner of a frame (COW, shared) */
+u32  pmm_refs(u64 phys);
 u64  pmm_alloc_contig(u64 n);       /* n contiguous zeroed frames, 0 on OOM  */
 void pmm_free_contig(u64 phys, u64 n);
 void pmm_get_stats(struct pmm_stats *out);
@@ -69,6 +71,12 @@ bool vmm_remap_user(u64 pml4_phys, u64 va, u32 prot);
 u64  vmm_user_to_phys(u64 pml4_phys, u64 va);   /* 0 if not mapped for user */
 bool vmm_user_ok(u64 pml4_phys, u64 va, u64 len, bool write);
 bool vmm_unmap_user(u64 pml4_phys, u64 va);     /* frees the frame */
-u64  vmm_as_clone(u64 pml4_phys);               /* deep copy of the user half, 0 on OOM */
+u64  vmm_as_clone(u64 pml4_phys);               /* copy-on-write copy of the user half, 0 on OOM */
+bool vmm_map_frame(u64 pml4_phys, u64 va, u64 frame, u32 prot, bool shared);
+int  vmm_page_state(u64 pml4_phys, u64 va);     /* 0 none, 1 mapped, 3 PROT_NONE, +4 COW */
+int  vmm_cow_fault(u64 pml4_phys, u64 va);
+u64  vmm_take_frame(u64 pml4_phys, u64 va, bool *shared);
+u32  vmm_unmap_range(u64 pml4_phys, u64 from, u64 to);
+void vmm_protect_range(u64 pml4_phys, u64 from, u64 to, u32 prot);
 
 #endif /* MERGEDOS_MM_H */
