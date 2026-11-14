@@ -56,6 +56,8 @@ void file_put(struct file *f)
 		return;
 	if (f->type == F_RAMFS)
 		ramfs_close(f->node);
+	if (f->type == F_MWM)
+		mwm_close();
 	if (f->type == F_PIPE) {
 		struct pipe *p = f->pipe;
 
@@ -436,6 +438,17 @@ long msys_open(struct task *t, u64 upath, u32 flags)
 
 	if (rc)
 		return rc;
+	if (!strcmp(path, "dev/mwm") || !strcmp(path, "/dev/mwm")) {
+		rc = mwm_open();
+		if (rc)
+			return rc;
+		f = file_new(F_MWM, flags | VFS_O_RDWR);
+		if (!f) {
+			mwm_close();
+			return -MERR_NOMEM;
+		}
+		return fd_install(t, f, 0, flags & VFS_O_CLOEXEC);
+	}
 	root = mount_of(path, &rest);
 	if (!root) {
 		const u8 *data;
@@ -498,6 +511,8 @@ long msys_read(struct task *t, int fd, u64 ubuf, u64 len)
 		return stdin_read(t, ubuf, len);
 	case F_PIPE:
 		return pipe_read(t, f, ubuf, len);
+	case F_MWM:
+		return mwm_read((f->flags & VFS_O_NONBLOCK) != 0, t, ubuf, len);
 	case F_ROFILE:
 		n = (long)MOS_MIN(len, f->size - MOS_MIN(f->pos, f->size));
 		if (n && uaccess_copy_out(t, ubuf, f->data + f->pos, (size_t)n))
@@ -598,6 +613,8 @@ long msys_write(struct task *t, int fd, u64 ubuf, u64 len)
 		return console_out(t, ubuf, len);
 	case F_PIPE:
 		return pipe_write(t, f, ubuf, len);
+	case F_MWM:
+		return mwm_write(t, ubuf, len);
 	case F_RAMFS: {
 		struct rnode *n = f->node;
 		u64 pos = (f->flags & VFS_O_APPEND) ? n->size : f->pos;

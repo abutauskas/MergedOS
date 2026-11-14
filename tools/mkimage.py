@@ -507,6 +507,8 @@ def build_tree(guest_dir, src_dir):
         "bin/spin.linux": (read(os.path.join(guest_dir, "spin.linux")), 0o755),
         "bin/proctest.linux": (read(os.path.join(guest_dir, "proctest.linux")), 0o755),
         "bin/cat.linux": (read(os.path.join(guest_dir, "proctest.linux")), 0o755),
+        "bin/mwmtest.linux": (read(os.path.join(guest_dir, "mwmtest.linux")), 0o755),
+        "bin/wl_comp.linux": (read(os.path.join(guest_dir, "wl_comp.linux")), 0o755),
         "Applications/Hello.app/Contents/Info.plist": (plist, 0o644),
         "Applications/Hello.app/Contents/MacOS/hello": (macho, 0o755),
         "pkg/hello_1.0-1_amd64.deb": (make_deb(elf), 0o644),

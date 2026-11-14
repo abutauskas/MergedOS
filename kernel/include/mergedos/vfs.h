@@ -14,7 +14,7 @@
 
 struct task;
 
-enum file_type { F_CONSOLE = 1, F_ROFILE, F_RODIR, F_RAMFS, F_PIPE };
+enum file_type { F_CONSOLE = 1, F_ROFILE, F_RODIR, F_RAMFS, F_PIPE, F_MWM };
 
 /* Open flags: the native set uses the Linux values. */
 #define VFS_O_ACCMODE   0x3
@@ -48,6 +48,12 @@ struct file {
 	struct pipe *pipe;              /* F_PIPE */
 	bool pipe_write;
 };
+
+/* /dev/mwm (kernel/deskrun.c, interface in mergedos/mwm.h) */
+long mwm_open(void);
+void mwm_close(void);
+long mwm_read(bool nonblock, struct task *t, u64 ubuf, u64 len);
+long mwm_write(struct task *t, u64 ubuf, u64 len);
 
 void vfs_init(void);
 struct file *file_get(struct file *f);          /* +1 reference */

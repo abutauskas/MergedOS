@@ -1397,18 +1397,25 @@ void wl_in_pointer_leave(struct wl_server *s)
 			ptr_to(&s->cl[k], -1, 0, 0);
 }
 
-void wl_in_key(struct wl_server *s, unsigned code, bool down, unsigned mods)
+void wl_in_mods(struct wl_server *s, unsigned mods)
+{
+	int si;
+	struct wl_client *c = client_of_win(s, s->focus_win, &si);
+
+	if (!c || mods == s->mods)
+		return;
+	s->mods = mods;
+	FOR_OBJ(c, i, WI_KEYBOARD)
+		ev(c, i, 4, "uuuuu", next_serial(c), mods, 0u, 0u, 0u);
+}
+
+void wl_in_key(struct wl_server *s, unsigned code, bool down)
 {
 	int si;
 	struct wl_client *c = client_of_win(s, s->focus_win, &si);
 
 	if (!c)
 		return;
-	if (mods != s->mods) {
-		s->mods = mods;
-		FOR_OBJ(c, i, WI_KEYBOARD)
-			ev(c, i, 4, "uuuuu", next_serial(c), mods, 0u, 0u, 0u);
-	}
 	FOR_OBJ(c, i, WI_KEYBOARD)
 		ev(c, i, 3, "uuuu", next_serial(c), now(c), code, down ? 1u : 0u);
 }

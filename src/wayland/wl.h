@@ -184,7 +184,8 @@ void wl_client_drop(struct wl_client *c);       /* frees everything, closes queu
 void wl_in_pointer_motion(struct wl_server *s, int win, int x, int y);
 void wl_in_pointer_button(struct wl_server *s, int win, int x, int y, unsigned btn, bool down);
 void wl_in_pointer_leave(struct wl_server *s);
-void wl_in_key(struct wl_server *s, unsigned evdev_code, bool down, unsigned mods);
+void wl_in_mods(struct wl_server *s, unsigned mods);  /* bit0 shift, bit2 ctrl */
+void wl_in_key(struct wl_server *s, unsigned evdev_code, bool down);
 void wl_in_focus(struct wl_server *s, int win, bool focused);
 void wl_in_close(struct wl_server *s, int win);
 /* Console character (ASCII, or the KEY_UP.. values) to an evdev key + modifier bits, 0 if none. */

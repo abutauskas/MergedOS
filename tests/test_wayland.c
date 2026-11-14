@@ -6,12 +6,19 @@
  */
 #define _GNU_SOURCE
 #include <dlfcn.h>
+#include <fcntl.h>
+#include <poll.h>
+#include <signal.h>
+#include <sys/stat.h>
+#include <sys/un.h>
+#include <sys/wait.h>
 #include <stdarg.h>
 #include <sys/mman.h>
 #include <sys/socket.h>
 #include <unistd.h>
 #include "tests/test.h"
 #include "src/wayland/wl.h"
+#include "kernel/include/mergedos/mwm.h"
 
 /* ---- mock window manager ---- */
 
@@ -128,6 +135,7 @@ static struct {
 	struct wl_conn c;               /* the client's own conn: writer for requests, reader for events */
 	struct rec ev[512];
 	int nev;
+	int ext;                        /* talking to the real wl_comp process, not in-process */
 	uint8_t sent[1 << 16];          /* everything the client sent, for the fuzzers */
 	size_t nsent;
 } T;
@@ -205,7 +213,13 @@ static void c_flush(void)
 	if (sendmsg(T.fd, &mh, 0) != (ssize_t)c->out_len)
 		abort();
 	wl_sent(c, c->out_len);
-	srv_pump();
+	if (T.ext) {
+		struct pollfd pf = { T.fd, POLLIN, 0 };
+
+		(void)poll(&pf, 1, 300);
+	} else {
+		srv_pump();
+	}
 	/* collect events */
 	for (;;) {
 		uint8_t buf[8192];
@@ -479,14 +493,15 @@ static void test_client_session(void)
 
 		CHECK_EQ(k, 30);
 		CHECK_EQ(mods, 1);
-		wl_in_key(&T.srv, k, true, mods);
-		wl_in_key(&T.srv, k, false, mods);
-		wl_in_key(&T.srv, 0, false, 0);
+		wl_in_mods(&T.srv, mods);
+		wl_in_key(&T.srv, k, true);
+		wl_in_key(&T.srv, k, false);
+		wl_in_mods(&T.srv, 0);
 	}
 	wl_in_close(&T.srv, 1);
 	rq(1, 0, "u", 31u);
 	CHECK(find(27, 3) != NULL);
-	CHECK_EQ(count(26, 3), 3);
+	CHECK_EQ(count(26, 3), 2);
 	CHECK(count(26, 4) >= 2);
 	CHECK(find(22, 1) != NULL);             /* xdg_toplevel.close */
 
@@ -704,11 +719,106 @@ static void test_keymap(void)
 	dlclose(h);
 }
 
+#ifdef WL_COMP_BIN
+/* The real guest binary, on the host kernel: socket, SCM_RIGHTS, memfd keymap, shm, /dev/mwm writes. */
+static void test_process(void)
+{
+	char dir[] = "/tmp/wltestXXXXXX", sock[64], mwm[64];
+	struct sockaddr_un sa = { .sun_family = AF_UNIX };
+	const uint32_t W = 16, H = 8;
+	pid_t pid;
+	int mfd, mw;
+	uint32_t *map;
+
+	if (access(WL_COMP_BIN, X_OK)) {
+		printf("  (%s not built: process test skipped)\n", WL_COMP_BIN);
+		return;
+	}
+	CHECK(mkdtemp(dir) != NULL);
+	snprintf(sock, sizeof(sock), "%s/wayland-0", dir);
+	snprintf(mwm, sizeof(mwm), "%s/mwm", dir);
+	mw = open(mwm, O_RDWR | O_CREAT, 0600);
+	close(mw);
+	pid = fork();
+	if (pid == 0) {
+		execl(WL_COMP_BIN, WL_COMP_BIN, "-q", "-m", mwm, sock, (char *)NULL);
+		_exit(127);
+	}
+	memset(&T, 0, sizeof(T));
+	T.ext = 1;
+	T.fd = socket(AF_UNIX, SOCK_STREAM, 0);
+	snprintf(sa.sun_path, sizeof(sa.sun_path), "%s", sock);
+	for (int i = 0; i < 100 && connect(T.fd, (struct sockaddr *)&sa, sizeof(sa)); i++)
+		usleep(20000);                  /* wait for the listener */
+	rq(1, 1, "u", 2u);
+	CHECK_EQ(count(2, 0), 11);
+	bindg(1, "wl_compositor", 5, 3);
+	bindg(3, "wl_shm", 1, 5);
+	bindg(4, "xdg_wm_base", 5, 6);
+	bindg(5, "wl_seat", 7, 7);
+	rq(7, 1, "u", 26u);                     /* keymap arrives over SCM_RIGHTS */
+	{
+		const struct rec *r = find(26, 0);
+
+		CHECK(r && r->fd >= 0 && r->w[1] == strlen(wl_keymap_text) + 1);
+		if (r && r->fd >= 0) {
+			char *km = mmap(NULL, r->w[1], PROT_READ, MAP_PRIVATE, r->fd, 0);
+
+			CHECK(km != MAP_FAILED && !strcmp(km, wl_keymap_text));
+			munmap(km, r->w[1]);
+		}
+	}
+	rq(3, 0, "u", 20u);
+	rq(6, 2, "uu", 21u, 20u);
+	rq(21, 1, "u", 22u);
+	rq(22, 2, "s", "proc");
+	rq(20, 6, "");
+	CHECK(find(22, 0) != NULL);
+	mfd = memfd_create("pool", 0);
+	CHECK_EQ(ftruncate(mfd, (off_t)(W * H * 4)), 0);
+	map = mmap(NULL, W * H * 4, PROT_READ | PROT_WRITE, MAP_SHARED, mfd, 0);
+	for (uint32_t i = 0; i < W * H; i++)
+		map[i] = 0xff000000u | (i * 3);
+	rq(5, 0, "uif", 23u, (int)(W * H * 4), mfd);
+	rq(23, 0, "uiiiiu", 24u, 0, (int)W, (int)H, (int)(W * 4), 1u);
+	rq(20, 1, "uii", 24u, 0, 0);
+	rq(20, 6, "");
+	rq(1, 0, "u", 30u);
+	{
+		uint8_t buf[4096];
+		ssize_t n;
+		const struct mwm_cmd *c = (const void *)buf;
+
+		mw = open(mwm, O_RDONLY);
+		n = read(mw, buf, sizeof(buf));
+		close(mw);
+		CHECK(n > (ssize_t)sizeof(*c) * 3);
+		CHECK(c->op == MWM_CREATE && c->a == (int)W && c->b == (int)H && c->win == 1);
+		c = (const void *)(buf + sizeof(*c));
+		CHECK(c->op == MWM_TITLE && c->len == 4 && !memcmp(buf + 2 * sizeof(*c), "proc", 4));
+		c = (const void *)(buf + 2 * sizeof(*c) + 4);
+		CHECK(c->op == MWM_PIXELS && c->c == (int)W && c->d == (int)H && c->len == W * H * 4);
+		CHECK(!memcmp(buf + 3 * sizeof(*c) + 4, map, W * H * 4));
+	}
+	munmap(map, W * H * 4);
+	close(mfd);
+	close(T.fd);
+	kill(pid, SIGKILL);
+	waitpid(pid, NULL, 0);
+	unlink(sock);
+	unlink(mwm);
+	rmdir(dir);
+}
+#endif
+
 void test_wayland(void)
 {
 	test_codec_roundtrip();
 	test_client_session();
 	test_protocol_errors();
 	test_keymap();
+#ifdef WL_COMP_BIN
+	test_process();
+#endif
 	test_fuzz();
 }

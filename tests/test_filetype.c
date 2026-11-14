@@ -754,7 +754,7 @@ static bool v_image(void *ctx, struct desk_image *img)
 
 static void test_viewer_window(void)
 {
-	static const struct desk_host host = { NULL, v_line, NULL, v_tab, v_image };
+	static const struct desk_host host = { NULL, v_line, NULL, v_tab, v_image, NULL, NULL };
 	static struct desktop d;
 	struct ft_image im;
 	size_t n;

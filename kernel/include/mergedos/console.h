@@ -27,6 +27,8 @@ void console_trace(const char *s);      /* serial line only */
 
 /* Input: merged PS/2 keyboard + COM1. poll() returns -1 when nothing is pending. */
 int  console_poll(void);
+/* Optional: sees every typed character first; true = consumed (the desktop gives keys to client windows). */
+extern bool (*console_key_hook)(int c);
 int  console_getc(void);
 
 /* VGA-only presentation controls (no effect on the serial mirror). */

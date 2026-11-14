@@ -18,10 +18,15 @@
 #include <mergedos/console.h>
 #include <mergedos/gfx.h>
 #include <mergedos/initrd.h>
+#include <mergedos/io.h>
+#include <mergedos/mwm.h>
+#include <mergedos/task.h>
+#include <mergedos/vfs.h>
 #include <mergedos/mm.h>
 #include <mergedos/monitor.h>
 #include <mergedos/sched.h>
 #include <mergedos/setup.h>
+#include "abi_dispatch/abi.h"
 #include "abi_dispatch/binfmt.h"
 #include "desktop/desktop.h"
 #include "filetype/filetype.h"
@@ -269,7 +274,11 @@ static struct desk_rect host_term(void *ctx, struct desk_rect r)
 	return r;
 }
 
-static const struct desk_host host = { NULL, host_line, host_term, host_tab, host_image };
+static const char *host_app_title(void *ctx, int win);
+static void host_app_paint(void *ctx, int win, struct desk_rect content, struct desk_rect clip);
+
+static const struct desk_host host = { NULL, host_line, host_term, host_tab, host_image,
+				       host_app_title, host_app_paint };
 
 /* ---- repainting ---------------------------------------------------------------- */
 
@@ -349,6 +358,410 @@ static void refresh_contents(void)
 				desktop_paint(&desk, desktop_content_rect(&desk, &desk.win[s]), &host);
 		gfx_cursor_refresh();
 	}
+}
+
+/* ---- /dev/mwm: windows with client pixels (docs/WAYLAND.md) ------------------------- */
+
+/*
+ * System calls only touch the slot table, pixel buffers and the event queue;
+ * everything that touches the window manager (open, close, resize, repaint)
+ * is requested through `state` and done by the desktop thread, which owns
+ * `desk`. Syscalls run with interrupts off, the desktop thread reads shared
+ * fields under irq_save(), so no further locking is needed on one CPU.
+ */
+enum { AW_FREE, AW_OPEN, AW_LIVE, AW_CLOSE };
+
+struct app_win {
+	u8 state;
+	int handle, id;                 /* client handle, desktop window id */
+	u32 *px;
+	u64 phys, pages;
+	int w, h;
+	char title[48];
+	struct desk_rect dirty;         /* content coordinates; empty = clean */
+	u64 old_phys, old_pages;        /* replaced by a resize, freed by the desktop thread */
+	bool resized;
+};
+
+static struct app_win appw[MWM_MAX_WIN];
+static bool mwm_opened;
+static struct mwm_event evq[64];
+static u32 ev_head, ev_tail;
+static int app_grab;                    /* handle holding the left button, 0 */
+
+static struct app_win *app_by_handle(int handle)
+{
+	for (int i = 0; i < MWM_MAX_WIN; i++)
+		if (appw[i].state != AW_FREE && appw[i].handle == handle)
+			return &appw[i];
+	return NULL;
+}
+
+static struct app_win *app_by_id(int id)
+{
+	for (int i = 0; i < MWM_MAX_WIN; i++)
+		if (appw[i].state == AW_LIVE && appw[i].id == id)
+			return &appw[i];
+	return NULL;
+}
+
+static void app_event(u32 type, int handle, int x, int y, u32 code, u32 state)
+{
+	evq[ev_head++ % ARRAY_SIZE(evq)] = (struct mwm_event){ type, (u32)handle, x, y, code, state,
+							      (u32)(time_ticks() * 1000 / SCHED_HZ), 0 };
+	if (ev_head - ev_tail > ARRAY_SIZE(evq))
+		ev_tail = ev_head - ARRAY_SIZE(evq);
+	thread_wake(&ev_head, 0, SCHED_MAX_THREADS);
+}
+
+static const char *host_app_title(void *ctx, int win)
+{
+	const struct app_win *a = app_by_id(win);
+
+	(void)ctx;
+	return a && a->title[0] ? a->title : NULL;
+}
+
+static void host_app_paint(void *ctx, int win, struct desk_rect content, struct desk_rect clip)
+{
+	const struct app_win *a = app_by_id(win);
+	const int ox = clip.x - content.x, oy = clip.y - content.y;
+	int w = clip.w, h = clip.h;
+
+	(void)ctx;
+	if (!a || !a->px) {
+		gfx_fill(clip.x, clip.y, clip.w, clip.h, 0);
+		return;
+	}
+	if (ox < a->w && oy < a->h) {
+		w = MOS_MIN(clip.w, a->w - ox);
+		h = MOS_MIN(clip.h, a->h - oy);
+		gfx_blit(clip.x, clip.y, w, h, a->px + (size_t)oy * (size_t)a->w + (size_t)ox,
+			 (size_t)a->w);
+	} else {
+		w = h = 0;
+	}
+	if (w < clip.w)                         /* the window is larger than its buffer */
+		gfx_fill(clip.x + w, clip.y, clip.w - w, clip.h, 0);
+	if (h < clip.h)
+		gfx_fill(clip.x, clip.y + h, MOS_MIN(clip.w, w), clip.h - h, 0);
+}
+
+static void app_free_buf(u64 phys, u64 pages)
+{
+	if (phys)
+		pmm_free_contig(phys, pages);
+}
+
+static bool app_alloc_buf(struct app_win *a, int w, int h)
+{
+	const u64 pages = ((u64)w * (u64)h * 4 + PAGE_SIZE - 1) / PAGE_SIZE;
+	const u64 phys = pmm_alloc_contig(pages);
+
+	if (!phys)
+		return false;
+	a->phys = phys;
+	a->pages = pages;
+	a->px = phys_to_virt(phys);
+	a->w = w;
+	a->h = h;
+	return true;
+}
+
+long mwm_open(void)
+{
+	if (!running)
+		return -MERR_NOENT;
+	if (mwm_opened)
+		return -MERR_EXIST;
+	mwm_opened = true;
+	ev_head = ev_tail = 0;
+	return 0;
+}
+
+/* The compositor went away: every window it made is closed by the desktop thread. */
+void mwm_close(void)
+{
+	mwm_opened = false;
+	for (int i = 0; i < MWM_MAX_WIN; i++)
+		if (appw[i].state != AW_FREE)
+			appw[i].state = AW_CLOSE;
+	app_grab = 0;
+}
+
+long mwm_read(bool nonblock, struct task *t, u64 ubuf, u64 len)
+{
+	long done = 0;
+
+	if (len < sizeof(struct mwm_event))
+		return -MERR_INVAL;
+	while (ev_head == ev_tail) {
+		if (nonblock)
+			return -MERR_AGAIN;
+		if (task_signal_pending())
+			return -MERR_INTR;
+		thread_block(&ev_head, 0, 0);
+	}
+	while (ev_head != ev_tail && len >= sizeof(struct mwm_event)) {
+		if (uaccess_copy_out(t, ubuf + (u64)done, &evq[ev_tail % ARRAY_SIZE(evq)],
+				     sizeof(struct mwm_event)))
+			return done ? done : -MERR_FAULT;
+		ev_tail++;
+		done += (long)sizeof(struct mwm_event);
+		len -= sizeof(struct mwm_event);
+	}
+	return done;
+}
+
+long mwm_write(struct task *t, u64 ubuf, u64 len)
+{
+	struct mwm_cmd c;
+	struct app_win *a;
+
+	if (len < sizeof(c) || uaccess_copy_in(t, &c, ubuf, sizeof(c)))
+		return len < sizeof(c) ? -MERR_INVAL : -MERR_FAULT;
+	if (len != sizeof(c) + c.len)
+		return -MERR_INVAL;
+	a = app_by_handle((int)c.win);
+	ubuf += sizeof(c);
+	switch (c.op) {
+	case MWM_CREATE: {
+		int slot = -1;
+
+		if (a || c.win == 0 || c.win > 255 || c.a <= 0 || c.b <= 0 || c.a > MWM_MAX_W ||
+		    c.b > MWM_MAX_H)
+			return a ? -MERR_EXIST : -MERR_INVAL;
+		for (int i = 0; i < MWM_MAX_WIN && slot < 0; i++)
+			if (appw[i].state == AW_FREE)
+				slot = i;
+		if (slot < 0)
+			return -MERR_MFILE;
+		a = &appw[slot];
+		memset(a, 0, sizeof(*a));
+		if (!app_alloc_buf(a, c.a, c.b))
+			return -MERR_NOMEM;
+		a->handle = (int)c.win;
+		a->dirty = (struct desk_rect){ 0, 0, 0, 0 };
+		a->state = AW_OPEN;
+		return (long)len;
+	}
+	case MWM_DESTROY:
+		if (!a)
+			return -MERR_NOENT;
+		a->state = AW_CLOSE;
+		return (long)len;
+	case MWM_TITLE: {
+		if (!a)
+			return -MERR_NOENT;
+		memset(a->title, 0, sizeof(a->title));
+		if (uaccess_copy_in(t, a->title, ubuf, MOS_MIN((u64)c.len, sizeof(a->title) - 1)))
+			return -MERR_FAULT;
+		return (long)len;
+	}
+	case MWM_PIXELS: {
+		const u64 rowb = (u64)(u32)c.c * 4;
+		struct desk_rect r = { c.a, c.b, c.c, c.d };
+
+		if (!a)
+			return -MERR_NOENT;
+		if (c.a < 0 || c.b < 0 || c.c <= 0 || c.d <= 0 || c.a + c.c > a->w ||
+		    c.b + c.d > a->h || c.len != rowb * (u64)(u32)c.d)
+			return -MERR_INVAL;
+		for (int row = 0; row < c.d; row++)
+			if (uaccess_copy_in(t, a->px + (size_t)(c.b + row) * (size_t)a->w + (size_t)c.a,
+					    ubuf + (u64)row * rowb, (size_t)rowb))
+				return -MERR_FAULT;
+		a->dirty = desk_rect_empty(a->dirty) ? r : desk_rect_union(a->dirty, r);
+		return (long)len;
+	}
+	case MWM_RESIZE: {
+		struct app_win n = { 0 };
+
+		if (!a)
+			return -MERR_NOENT;
+		if (c.a <= 0 || c.b <= 0 || c.a > MWM_MAX_W || c.b > MWM_MAX_H || a->old_phys)
+			return a->old_phys ? -MERR_AGAIN : -MERR_INVAL;
+		if (!app_alloc_buf(&n, c.a, c.b))
+			return -MERR_NOMEM;
+		a->old_phys = a->phys;
+		a->old_pages = a->pages;
+		a->phys = n.phys;
+		a->pages = n.pages;
+		a->px = n.px;
+		a->w = n.w;
+		a->h = n.h;
+		a->dirty = (struct desk_rect){ 0, 0, 0, 0 };
+		a->resized = true;
+		return (long)len;
+	}
+	}
+	return -MERR_INVAL;
+}
+
+/* Desktop thread: open, resize, repaint and close what the client asked for. */
+static void app_service(void)
+{
+	bool changed = false;
+
+	for (int i = 0; i < MWM_MAX_WIN; i++) {
+		struct app_win *a = &appw[i];
+		struct desk_rect d;
+		u64 flags, old_phys = 0, old_pages = 0;
+		bool resized;
+
+		if (a->state == AW_OPEN) {
+			a->id = desktop_open_app(&desk, a->w, a->h);
+			a->state = a->id ? AW_LIVE : AW_CLOSE;
+			if (!a->id) {
+				trace2("no free window slot for ", "app");
+			} else {
+				const struct desk_rect c = desktop_content_rect(&desk, desktop_window(&desk, a->id));
+				char where[48];
+
+				ksnprintf(where, sizeof(where), "content %d %d %d %d", c.x, c.y, c.w, c.h);
+				trace2("app window ", where);
+			}
+			changed = true;
+		}
+		if (a->state == AW_CLOSE) {
+			if (a->id)
+				(void)desktop_close(&desk, a->id);
+			flags = irq_save();
+			app_free_buf(a->phys, a->pages);
+			app_free_buf(a->old_phys, a->old_pages);
+			if (app_grab == a->handle)
+				app_grab = 0;
+			memset(a, 0, sizeof(*a));
+			irq_restore(flags);
+			changed = true;
+			continue;
+		}
+		if (a->state != AW_LIVE)
+			continue;
+		flags = irq_save();
+		resized = a->resized;
+		a->resized = false;
+		old_phys = a->old_phys;
+		old_pages = a->old_pages;
+		a->old_phys = 0;
+		d = a->dirty;
+		a->dirty = (struct desk_rect){ 0, 0, 0, 0 };
+		irq_restore(flags);
+		if (resized) {
+			(void)desktop_set_content(&desk, a->id, a->w, a->h);
+			changed = true;
+		}
+		if (old_phys)
+			app_free_buf(old_phys, old_pages);
+		if (!resized && !desk_rect_empty(d)) {
+			const struct desk_window *w = desktop_window(&desk, a->id);
+			const struct desk_rect c = desktop_content_rect(&desk, w);
+
+			if (desktop_visible(w)) {
+				desktop_paint(&desk, (struct desk_rect){ c.x + d.x, c.y + d.y, d.w, d.h },
+					      &host);
+				gfx_cursor_refresh();
+			}
+		}
+	}
+	if (changed)
+		flush();
+}
+
+/* Pointer, focus and keys for the focused client window (desktop thread). */
+static int app_handle_at(int x, int y, struct desk_rect *content)
+{
+	const struct desk_hit h = desktop_hit(&desk, x, y);
+	const struct desk_window *w = desktop_window(&desk, h.win);
+	const struct app_win *a;
+
+	if (h.part != DESK_PART_CONTENT || !w || w->kind != DESK_WIN_APP || !(a = app_by_id(w->id)))
+		return 0;
+	*content = desktop_content_rect(&desk, w);
+	return a->handle;
+}
+
+static bool app_rel(int handle, int x, int y, int *rx, int *ry)
+{
+	const struct app_win *a = app_by_handle(handle);
+	const struct desk_window *w = a && a->state == AW_LIVE ? desktop_window(&desk, a->id) : NULL;
+	struct desk_rect c;
+
+	if (!w)
+		return false;
+	c = desktop_content_rect(&desk, w);
+	*rx = x - c.x;
+	*ry = y - c.y;
+	return true;
+}
+
+static void app_press(int handle, int x, int y)
+{
+	int rx, ry;
+
+	if (app_rel(handle, x, y, &rx, &ry)) {
+		app_grab = handle;
+		app_event(MWM_EV_BUTTON, handle, rx, ry, 0, 1);
+	}
+}
+
+static void app_release(int x, int y)
+{
+	int rx, ry;
+
+	if (app_grab && app_rel(app_grab, x, y, &rx, &ry))
+		app_event(MWM_EV_BUTTON, app_grab, rx, ry, 0, 0);
+	app_grab = 0;
+}
+
+static void app_pointer(const struct mouse_state *m)
+{
+	static int last_x = -1, last_y = -1, over, last_top;
+	static u8 last_btn;
+	struct desk_rect c;
+	const int under = app_handle_at(m->x, m->y, &c);
+	const int target = app_grab ? app_grab : under;
+	const int top = desktop_top(&desk);
+	int rx, ry;
+
+	if (top != last_top) {
+		const struct app_win *o = app_by_id(last_top), *n = app_by_id(top);
+
+		if (o)
+			app_event(MWM_EV_FOCUS, o->handle, 0, 0, 0, 0);
+		if (n)
+			app_event(MWM_EV_FOCUS, n->handle, 0, 0, 0, 1);
+		last_top = top;
+	}
+	if (over != target) {
+		if (over && app_by_handle(over))
+			app_event(MWM_EV_LEAVE, over, 0, 0, 0, 0);
+		over = target;
+	}
+	if (target && app_rel(target, m->x, m->y, &rx, &ry)) {
+		if (m->x != last_x || m->y != last_y)
+			app_event(MWM_EV_MOTION, target, rx, ry, 0, 0);
+		for (int b = 1; b <= 2; b++) {          /* right, middle: left comes through press() */
+			const u8 bit = b == 1 ? MOUSE_RIGHT : MOUSE_MIDDLE;
+
+			if ((m->buttons ^ last_btn) & bit)
+				app_event(MWM_EV_BUTTON, target, rx, ry, (u32)b, (m->buttons & bit) ? 1 : 0);
+		}
+	}
+	last_x = m->x;
+	last_y = m->y;
+	last_btn = m->buttons;
+}
+
+/* console_poll() hook: keys go to the focused client window instead of the shell. */
+static bool app_key(int c)
+{
+	const struct app_win *a = app_by_id(desktop_top(&desk));
+
+	if (!a || c == 3)                       /* Ctrl-C still reaches the shell job */
+		return false;
+	app_event(MWM_EV_KEY, a->handle, 0, 0, (u32)c, 1);
+	return true;
 }
 
 /* ---- mouse ------------------------------------------------------------------------ */
@@ -504,6 +917,13 @@ static void press(int x, int y)
 		}
 		break;
 	case DESK_PART_CLOSE:
+		if (w->kind == DESK_WIN_APP) {          /* the client decides: it gets a close request */
+			const struct app_win *a = app_by_id(w->id);
+
+			if (a)
+				app_event(MWM_EV_CLOSE, a->handle, 0, 0, 0, 0);
+			break;
+		}
 		trace2("window close ", desktop_kind_name(w->kind));
 		if (w->kind == DESK_WIN_VIEWER)
 			view_buffers_put();
@@ -519,6 +939,12 @@ static void press(int x, int y)
 		(void)desktop_focus(&desk, h.win);
 		if (w->kind == DESK_WIN_FILES)
 			file_clicked(h.row);
+		if (w->kind == DESK_WIN_APP) {
+			const struct app_win *a = app_by_id(w->id);
+
+			if (a)
+				app_press(a->handle, x, y);
+		}
 		break;
 	case DESK_PART_TAB:
 		(void)desktop_focus(&desk, h.win);
@@ -600,14 +1026,17 @@ static void desk_thread(void *arg)
 			mos_strlcpy(path, vreq_path, sizeof(path));
 			viewer_open(path);
 		}
+		app_service();
 		if (m->presses != presses) {
 			presses = m->presses;
 			press(m->press_x, m->press_y);
 		}
+		app_pointer(m);
 		if (drag_id && m->releases == releases && (m->buttons & MOUSE_LEFT))
 			drag_to(m->x, m->y);
 		if (m->releases != releases) {
 			releases = m->releases;
+			app_release(m->release_x, m->release_y);
 			release(m->release_x, m->release_y);
 		}
 		if (time_ticks() - last_status >= SCHED_HZ) {
@@ -657,6 +1086,7 @@ bool desktop_start(enum de_id layout)
 	desk.bar_dirty = false;
 	flush();
 	draw_status();
+	console_key_hook = app_key;
 	if (!running) {
 		running = thread_create(desk_thread, NULL, "desktop") >= 0;
 		if (!running)

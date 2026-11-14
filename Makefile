@@ -222,6 +222,24 @@ $(BUILD)/guest/proctest.linux: src/guest/proctest.c
 		-fno-builtin -s -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $<
 GUEST_BINS += $(BUILD)/guest/proctest.linux
 
+# /dev/mwm end to end (driven by tools/e2e-test.py with the emulated mouse and keyboard).
+$(BUILD)/guest/mwmtest.linux: src/guest/mwmtest.c kernel/include/mergedos/mwm.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -Os -static -nostdlib -ffreestanding -fno-pic -no-pie -I. \
+		-fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables \
+		-fno-builtin -s -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $<
+GUEST_BINS += $(BUILD)/guest/mwmtest.linux
+
+# The Wayland compositor (docs/WAYLAND.md): a static Linux ELF on raw system calls.
+WL_SRC := src/wayland/wl_main.c src/wayland/wl_wire.c src/wayland/wl_comp.c src/wayland/wl_keymap.c
+$(BUILD)/guest/wl_comp.linux: $(WL_SRC) src/wayland/wl.h kernel/include/mergedos/mwm.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -Os -Wall -Wextra -static -nostdlib -ffreestanding -fno-pic -no-pie -I. \
+		-fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables \
+		-fno-builtin -fno-tree-loop-distribute-patterns -s -Wl,--build-id=none \
+		-Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $(WL_SRC)
+GUEST_BINS += $(BUILD)/guest/wl_comp.linux
+
 $(eval $(call GUEST_RULE,hello.linux,hello_linux.S))
 $(eval $(call GUEST_RULE,hello.freebsd,hello_freebsd.S))
 $(eval $(call GUEST_RULE,hello.macho,hello_macho.S))
@@ -456,9 +474,10 @@ $(BUILD)/host/mpkg: tools/mpkg.c $(SHARED_C)
 	@mkdir -p $(dir $@)
 	$(HOSTCC) $(HOST_CFLAGS) -o $@ tools/mpkg.c $(SHARED_C)
 
-$(BUILD)/host/run_tests: $(TEST_C) $(SHARED_C) $(UI_C) $(wildcard tests/*.h)
+$(BUILD)/host/run_tests: $(TEST_C) $(SHARED_C) $(UI_C) $(wildcard tests/*.h) $(BUILD)/guest/wl_comp.linux
 	@mkdir -p $(dir $@)
 	$(HOSTCC) $(HOST_CFLAGS) $(HOST_SAN) -DFIXTURE_DIR=\"$(BUILD)/fixtures\" \
+		-DWL_COMP_BIN=\"$(BUILD)/guest/wl_comp.linux\" \
 		-DDARWIN_ROOT=\"$(DARWIN_ROOT)\" \
 		-o $@ $(TEST_C) $(SHARED_C) $(UI_C)
 

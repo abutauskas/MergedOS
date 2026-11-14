@@ -34,6 +34,8 @@ void gfx_blend(int x, int y, u32 rgb, u8 alpha);         /* one pixel, alpha 0..
 void gfx_glyph(int x, int y, char c, u32 rgb, int scale);              /* ASCII only */
 void gfx_text(int x, int y, const char *s, u32 rgb, int scale);        /* UTF-8 */
 u32  gfx_read(int x, int y);
+/* Copy w x h XRGB pixels (rows `stride` pixels apart) to the screen at x, y, clipped. */
+void gfx_blit(int x, int y, int w, int h, const u32 *src, size_t stride);
 int  gfx_selftest(void);                /* 0 = framebuffer reads back what is written */
 
 /* Pointer sprite. Drawing primitives lift it automatically; refresh puts it back. */

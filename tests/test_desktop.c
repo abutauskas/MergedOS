@@ -30,7 +30,7 @@ static struct desk_rect mock_term(void *ctx, struct desk_rect clip)
 	return clip;
 }
 
-static const struct desk_host host = { NULL, mock_line, mock_term, NULL, NULL };
+static const struct desk_host host = { NULL, mock_line, mock_term, NULL, NULL, NULL, NULL };
 
 static bool rect_in(struct desk_rect in, struct desk_rect out)
 {

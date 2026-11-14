@@ -66,7 +66,7 @@ enum desk_kind desktop_launcher_kind(enum desk_action a)
 const char *desktop_kind_name(enum desk_kind k)
 {
 	static const char *const names[DESK_KINDS] = { "terminal", "files", "system", "fence",
-						       "viewer" };
+						       "viewer", "app" };
 
 	return k >= 0 && k < DESK_KINDS ? names[k] : "none";
 }
@@ -74,7 +74,7 @@ const char *desktop_kind_name(enum desk_kind k)
 static const char *kind_title(enum desk_kind k)
 {
 	static const char *const titles[DESK_KINDS] = { "Terminal - msh", "Files", "System",
-							"Mergedfence", "Viewer" };
+							"Mergedfence", "Viewer", "Window" };
 
 	return titles[k];
 }
@@ -82,7 +82,7 @@ static const char *kind_title(enum desk_kind k)
 static enum desk_action kind_launcher(enum desk_kind k)
 {
 	static const enum desk_action a[DESK_KINDS] = { DESK_TERMINAL, DESK_FILES, DESK_SYSTEM,
-							 DESK_FENCE, DESK_NONE };
+							 DESK_FENCE, DESK_NONE, DESK_NONE };
 
 	return a[k];
 }
@@ -471,6 +471,35 @@ bool desktop_minimise(struct desktop *d, int id)
 		retile(d);
 	focus_changed(d, old_top);
 	return true;
+}
+
+bool desktop_set_content(struct desktop *d, int id, int cw, int ch)
+{
+	struct desk_window *w = desktop_window(d, id);
+	struct desk_rect old, nf;
+
+	if (!w || cw <= 0 || ch <= 0)
+		return false;
+	old = w->frame;
+	nf = old;
+	nf.w = MOS_MIN(cw + 2, d->work.w);
+	nf.h = MOS_MIN(ch + themes[d->layout].title_h + 2, d->work.h);
+	nf = clamp_frame(d, nf);
+	w->frame = nf;
+	w->saved = nf;
+	damage(d, desk_rect_union(old, nf));
+	return true;
+}
+
+int desktop_open_app(struct desktop *d, int cw, int ch)
+{
+	const int id = desktop_open(d, DESK_WIN_APP);
+
+	if (id && !desktop_set_content(d, id, cw, ch)) {
+		(void)desktop_close(d, id);
+		return 0;
+	}
+	return id;
 }
 
 bool desktop_close(struct desktop *d, int id)
@@ -1066,6 +1095,17 @@ static void draw_viewer(struct desktop *d, const struct desk_window *w, const st
 	clip = saved;
 }
 
+static const char *window_title(const struct desk_window *w, const struct desk_host *h)
+{
+	const char *t = NULL;
+
+	if (h && w->kind == DESK_WIN_APP && h->title)
+		t = h->title(h->ctx, w->id);
+	if (!t && h && h->line)
+		t = h->line(h->ctx, w->kind, DESK_LINE_TITLE);
+	return t ? t : kind_title(w->kind);
+}
+
 static void draw_window(struct desktop *d, const struct desk_window *w, bool focused,
 			const struct desk_host *h)
 {
@@ -1085,9 +1125,7 @@ static void draw_window(struct desktop *d, const struct desk_window *w, bool foc
 	window_controls(d, w, tbg);
 	saved = clip_push((struct desk_rect){ tx, title.y, title.x + title.w - tx -
 					      (d->layout == DE_TASKBAR ? 80 : 4), title.h });
-	ctext(tx, title.y + (title.h - 14) / 2,
-	      (h && h->line && h->line(h->ctx, w->kind, DESK_LINE_TITLE)) ?
-	      h->line(h->ctx, w->kind, DESK_LINE_TITLE) : kind_title(w->kind),
+	ctext(tx, title.y + (title.h - 14) / 2, window_title(w, h),
 	      focused ? t->title_text : mix(t->title_text, tbg, 1, 2), 2);
 	clip = saved;
 
@@ -1103,6 +1141,15 @@ static void draw_window(struct desktop *d, const struct desk_window *w, bool foc
 		return;
 	}
 
+	if (w->kind == DESK_WIN_APP) {          /* the client's pixels cover the whole content area */
+		struct desk_rect area = desk_rect_and(c, clip);
+
+		if (h && h->app_paint && !desk_rect_empty(area))
+			h->app_paint(h->ctx, w->id, c, area);
+		else
+			cfill(c.x, c.y, c.w, c.h, t->term_bg);
+		return;
+	}
 	cfill(c.x, c.y, c.w, c.h, t->panel);
 	if (w->kind == DESK_WIN_VIEWER) {
 		draw_viewer(d, w, h);

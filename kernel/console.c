@@ -452,6 +452,8 @@ static int serial_poll(void)
 	return c;
 }
 
+bool (*console_key_hook)(int c);
+
 int console_poll(void)
 {
 	int c;
@@ -459,8 +461,11 @@ int console_poll(void)
 	if (inject_head != inject_tail)
 		return inject_buf[inject_tail++ % sizeof(inject_buf)];
 	c = serial_poll();
-
-	return c >= 0 ? c : keyboard_poll();
+	if (c < 0)
+		c = keyboard_poll();
+	if (c >= 0 && console_key_hook && console_key_hook(c))
+		return -1;                      /* taken by a window (kernel/deskrun.c) */
+	return c;
 }
 
 int console_getc(void)
