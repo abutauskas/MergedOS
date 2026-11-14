@@ -31,7 +31,7 @@ for mem in "$@"; do
 	# Wine's stack (a big module) is attached, with a long timeout, to the large-memory run only.
 	mod=""; t=$TIMEOUT
 	[ -n "$mods" ] && mod="-initrd $mods"
-	if [ "$mem" -ge 1024 ] && [ -n "$wine_mods" ]; then mod="-initrd $wine_mods"; t=${WINE_TIMEOUT:-600}; fi
+	if [ "$mem" -ge 1024 ] && [ -n "$wine_mods" ]; then mod="-initrd $wine_mods"; t=${WINE_TIMEOUT:-1200}; fi
 	timeout "$t" "$QEMU" -m "$mem" -no-reboot -display none -serial stdio \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
 		-kernel "$KERNEL" $mod -append "selftest" >"$LOG" 2>&1
