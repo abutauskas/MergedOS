@@ -62,6 +62,7 @@ for mem in "$@"; do
 done
 # The same boot on QEMU's default NIC (Intel e1000): lease, ping and DNS must work too.
 mem=$1
+mod=""; [ -n "$mods" ] && mod="-initrd $mods"   # never the Wine module here
 timeout "$TIMEOUT" "$QEMU" -m "$mem" -no-reboot -display none -serial stdio \
 	-netdev user,id=n0 -device e1000,netdev=n0 \
 	-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
