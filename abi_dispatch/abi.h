@@ -84,6 +84,7 @@ extern const struct abi_personality_ops abi_nt_ops;
 
 void abi_ctx_init(struct abi_ctx *ctx, enum abi_personality p, struct task *task);
 void abi_dispatch(struct abi_ctx *ctx, struct syscall_frame *f);
+void lx_trace(struct abi_ctx *ctx, const struct abi_call *c, long ret);     /* debug hook */
 const char *abi_personality_name(enum abi_personality p);
 const struct abi_personality_ops *abi_personality_ops(enum abi_personality p);
 

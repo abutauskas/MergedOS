@@ -682,6 +682,22 @@ void task_user_fault(struct trap_frame *tf, u64 fault_addr)
 	if (tf->vector == 14 && (!(tf->error & 1) || (tf->error & 2)) &&
 	    !task_fault_in(t, fault_addr, tf->error & 2))
 		return;                         /* a reserved page, now backed */
+	if (t->abi.personality == ABI_LINUX) {          /* a handler may take it */
+		int sig = fault_signal((u32)tf->vector), code = 0x80;      /* SI_KERNEL */
+		u64 addr = 0;
+
+		switch (tf->vector) {
+		case 14: code = umm_find(t, fault_addr) ? 2 : 1; addr = fault_addr; break;
+		case 0:  code = 1; addr = tf->rip; break;      /* FPE_INTDIV */
+		case 16: case 19: code = 7; addr = tf->rip; break;
+		case 6:  code = 1; addr = tf->rip; break;      /* ILL_ILLOPC */
+		case 1:  code = 2; break;                      /* TRAP_TRACE */
+		case 17: code = 1; addr = fault_addr; break;   /* BUS_ADRALN */
+		default: break;
+		}
+		if (task_fault_signal(tf, sig, code, addr))
+			return;
+	}
 	t->faulted = true;
 	t->fault_vector = (u32)tf->vector;
 	t->fault_rip = tf->rip;

@@ -715,8 +715,14 @@ static void linux_decode(const struct syscall_frame *f, struct abi_call *c)
 	c->usp = f->rsp;
 }
 
+const struct abi_sysent *lx_ext_lookup(u64 nr);
+
 static const struct abi_sysent *linux_lookup(const struct abi_call *c)
 {
+	const struct abi_sysent *e = lx_ext_lookup(c->nr);
+
+	if (e)
+		return e;
 	if (c->nr < ARRAY_SIZE(linux_sysent) && linux_sysent[c->nr].fn)
 		return &linux_sysent[c->nr];
 	return NULL;

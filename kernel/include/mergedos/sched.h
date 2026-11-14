@@ -46,6 +46,11 @@ struct thread {
 	u64 fs_base, gs_base;
 	u64 clear_tid;                  /* CLONE_CHILD_CLEARTID / set_tid_address  */
 	u64 sigmask;
+	u64 tpending;                   /* signals sent to this thread (tgkill) */
+	u64 ss_sp, ss_size;             /* sigaltstack */
+	u32 ss_flags;
+	bool restart;                   /* the call in progress returned EINTR */
+	u64 restart_nr;
 	struct syscall_frame *uframe;   /* registers of the system call in progress */
 	bool iret_pending;              /* leave the system call through iret_frame */
 	bool woken;                     /* thread_wake() rather than a timeout     */

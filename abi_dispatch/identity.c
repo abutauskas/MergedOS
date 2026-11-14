@@ -81,3 +81,7 @@ WEAK long msys_kill(struct task *t, int pid, int sig) NOSYS
 WEAK long msys_sigaction(struct task *t, int sig, u64 a, u64 o) NOSYS
 WEAK long msys_sigprocmask(struct task *t, int how, u64 s, u64 o) NOSYS
 WEAK long msys_sigreturn(struct task *t) NOSYS
+
+/* Kernel-only Linux calls (kernel/lxsys.c) take precedence over the portable table. */
+WEAK const struct abi_sysent *lx_ext_lookup(u64 nr) { return NULL; }
+WEAK void lx_trace(struct abi_ctx *ctx, const struct abi_call *c, long ret) {}

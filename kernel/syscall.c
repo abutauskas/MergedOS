@@ -27,10 +27,13 @@ u64 syscall_handler(struct syscall_frame *f)
 		panic("SYSCALL from ring 3 with no current task");
 	th->uframe = f;
 	th->iret_pending = false;
+	th->restart = false;
+	th->restart_nr = f->rax;
 	abi_dispatch(&t->abi, f);
+	th->restart = t->abi.personality == ABI_LINUX && (s64)f->rax == -4;     /* EINTR */
 	if (t->exited)
 		task_exit_group(t, t->exit_code, t->termsig);  /* exit_group(), or killed */
-	if (!th->iret_pending && !(t->sigpending & ~th->sigmask))
+	if (!th->iret_pending && !((t->sigpending | th->tpending) & ~th->sigmask))
 		return 0;
 	tf = KSTACK_IRET(th);
 	if (!th->iret_pending) {

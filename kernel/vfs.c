@@ -38,7 +38,10 @@ void vfs_init(void)
 	for (unsigned i = 0; i < ARRAY_SIZE(mounts); i++)
 		mounts[i].root = ramfs_new_root();
 	anon_root = ramfs_new_root();
+	socket_init();
 }
+
+void socket_init(void);                 /* kernel/socket.c */
 
 static char *kstrdup(const char *s)
 {
@@ -638,13 +641,12 @@ long vfs_path(struct task *t, int dirfd, u64 upath, bool follow, char *canon)
 	return resolve(joined, canon, follow);
 }
 
-/* Resolve a kernel-side path (exec) against the cwd of the running task. */
+/* Resolve a kernel-side path (exec, interpreters): always from the root. */
 static long kernel_path(const char *path, char *canon)
 {
 	char joined[2 * PATH_MAX_LEN];
-	struct task *t = task_current();
 
-	ksnprintf(joined, sizeof(joined), "%s/%s", path[0] == '/' || !t ? "" : t->cwd, path);
+	ksnprintf(joined, sizeof(joined), "/%s", path);
 	return resolve(joined, canon, true);
 }
 
@@ -691,7 +693,7 @@ static void kstat_node(struct kstat *st, const struct rnode *n, u32 dev)
 {
 	st->dev = dev;
 	st->ino = n->ino;
-	st->mode = (n->dir ? S_IFDIR : n->symlink ? S_IFLNK : S_IFREG) | n->mode;
+	st->mode = (n->dir ? S_IFDIR : n->symlink ? S_IFLNK : n->sock ? S_IFSOCK : S_IFREG) | n->mode;
 	st->nlink = n->dir ? 2 : 1;
 	st->size = n->size;
 	st->atime = n->atime;
@@ -889,7 +891,10 @@ long vfs_open_at(struct task *t, int dirfd, u64 upath, u32 flags, u32 mode)
 		kprintf("[vfs] open /%s flags %x: error %ld\n", canon, flags, rc);
 	if (rc)
 		return rc;
-	return fd_install(t, f, 0, flags & VFS_O_CLOEXEC);
+	rc = fd_install(t, f, 0, flags & VFS_O_CLOEXEC);
+	if (vfs_debug)
+		kprintf("[vfs] pid %d open /%s = %ld\n", t->pid, canon, rc);
+	return rc;
 }
 
 long msys_open(struct task *t, u64 upath, u32 flags)
@@ -1742,4 +1747,37 @@ long vfs_getdents(struct task *t, int fd, u64 ubuf, u64 count)
 		done += reclen;
 	}
 	return (long)done;
+}
+
+/* A socket's name in the file system (AF_UNIX bind/connect): the ramfs node, created on bind. */
+long vfs_sock_path(struct task *t, const char *path, bool create, struct rnode **out)
+{
+	char canon[PATH_MAX_LEN];
+	struct loc l;
+	struct rnode *n;
+	char joined[2 * PATH_MAX_LEN];
+	long rc;
+
+	ksnprintf(joined, sizeof(joined), "%s/%s", path[0] == '/' ? "" : t->cwd, path);
+	rc = resolve(joined, canon, true);
+	if (rc)
+		return rc;
+	locate(canon, &l);
+	if (!create) {
+		if (l.kind != L_RAMFS)
+			return -MERR_NOENT;
+		*out = l.node;
+		return 0;
+	}
+	if (l.kind != L_NONE)
+		return -MERR_ADDRINUSE;
+	if (!l.root)
+		return -MERR_ACCES;
+	rc = ramfs_create(l.root, l.rest, false, true, &n);
+	if (rc)
+		return rc;
+	n->mode = 0777 & ~t->umask;
+	n->atime = n->mtime = n->ctime = msys_clock_ns();
+	*out = n;
+	return 0;
 }

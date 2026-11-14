@@ -153,6 +153,12 @@ void task_signal(struct task *t, int sig);
 bool task_signal_pending(void);         /* an unblocked signal waits for the caller */
 /* Deliver pending signals into a ring-3 frame; may not return (default action). */
 void task_signal_deliver(struct trap_frame *tf);
+bool task_fault_signal(struct trap_frame *tf, int sig, int code, u64 addr);   /* Linux CPU faults */
+long task_sigaltstack(struct task *t, u64 uss, u64 uold);
+long task_tgkill(struct task *t, int tgid, int tid, int sig);
+long task_sigtimedwait(struct task *t, u64 uset, u64 uinfo, u64 utimeout);
+long task_sigpending(struct task *t, u64 uset);
+long task_sigsuspend(struct task *t, u64 umask);
 int  task_fault_in(struct task *t, u64 va, bool write);         /* demand paging */
 void task_keyboard_pump(struct task *fg);                       /* stdin + Ctrl-C */
 

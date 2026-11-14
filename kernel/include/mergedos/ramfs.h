@@ -18,6 +18,7 @@ struct rnode {
 	bool dir;
 	bool unlinked;                  /* gone from its directory, still open */
 	bool symlink;                   /* data holds the link target */
+	void *sock;                     /* a bound socket (AF_UNIX), see unix.c */
 	u32 mode;                       /* permission bits */
 	u64 atime, mtime, ctime;        /* nanoseconds, set by the caller */
 	u32 opens;

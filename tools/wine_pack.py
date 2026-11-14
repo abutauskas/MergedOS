@@ -14,13 +14,13 @@ import tempfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from mkimage import ustar  # noqa: E402
 
-PE = """ntdll kernel32 kernelbase win32u msvcrt ucrtbase user32 gdi32 advapi32 sechost
+PE = """apisetschema ntdll kernel32 kernelbase win32u msvcrt ucrtbase user32 gdi32 advapi32 sechost
 rpcrt4 shlwapi shell32 ole32 combase imm32 version bcrypt ws2_32 wineboot conhost services
 cmd plugplay winedevice explorer rundll32 regedit start winemenubuilder
 setupapi cfgmgr32 wineusb winebus mountmgr msi wtsapi32 userenv nsi netapi32 iphlpapi
 secur32 crypt32 wintrust dbghelp apphelp oleaut32 uxtheme wldap32 mpr oleacc
 authz mswsock dnsapi winspool""".split()
-UNIX = "ntdll win32u".split()
+UNIX = "ntdll win32u ws2_32 bcrypt mountmgr nsiproxy netapi32 secur32 crypt32 dnsapi".split()
 LIBS = ["libunwind.so.8", "liblzma.so.5", "libgcc_s.so.1"]
 
 
@@ -52,6 +52,7 @@ def main():
         if not p:
             sys.exit(f"wine_pack: {rel} not found")
         add(rel, p)
+    tree["usr/lib/wine/wineserver"] = tree["usr/lib/wine/wineserver64"]   # where the loader looks
     wd = "usr/lib/x86_64-linux-gnu/wine/"
     for n in UNIX:
         p = find(roots, f"{wd}x86_64-unix/{n}.so")

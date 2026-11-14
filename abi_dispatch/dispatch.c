@@ -63,6 +63,8 @@ void abi_dispatch(struct abi_ctx *ctx, struct syscall_frame *f)
 	}
 	if (ret < 0)
 		ctx->stats.errors++;
+	if (ctx->personality == ABI_LINUX)
+		lx_trace(ctx, &call, ret);
 
 	ops->encode(f, &call, ret);
 }

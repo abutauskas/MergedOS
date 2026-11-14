@@ -8,7 +8,12 @@
 #include <mergedos/compat.h>
 #include <mergedos/initrd.h>
 #include <mergedos/mm.h>
+#include <mergedos/boot.h>
 #include <mergedos/task.h>
+#include <mergedos/vfs.h>
+
+extern const char *lx_trace_name;
+extern int lx_trace_pid;
 
 int wine_boot_check(void)
 {
@@ -30,6 +35,10 @@ int wine_boot_check(void)
 	size_t len;
 	int failures = 0;
 
+	if (boot_cmdline_get("lxtrace", NULL, 0)) {     /* development: log opens and every syscall of wine64 */
+		vfs_debug = true;
+		lx_trace_name = "wine64";
+	}
 	if (initrd_find("usr/lib/wine/wine64", &img, &len)) {
 		kprintf("[wine] wine64 loader     skipped (no Wine module; make wine-linux)\n");
 		return 0;
@@ -51,4 +60,28 @@ int wine_boot_check(void)
 			break;
 	}
 	return failures;
+}
+
+/* Kernel interfaces Wine relies on, exercised by a static musl program (src/guest/lxtest.c). */
+int lxtest_boot_check(void)
+{
+	static const char *const env[] = { "PATH=/bin", "HOME=/home/user", NULL };
+	static const char *const argv[] = { "lxtest", NULL };
+	struct exec_report rep = { 0 };
+	const u8 *img;
+	size_t len;
+	int rc;
+	bool ok;
+
+	if (initrd_find("bin/lxtest", &img, &len) || !len) {
+		kprintf("[lx] lxtest              skipped (built without musl-gcc, or no sysroot)\n");
+		return 0;
+	}
+	rc = task_exec_argv("/bin/lxtest", argv, env, &rep);
+	ok = !rc && rep.exit_code == 0 && !rep.faulted && mos_memstr(rep.out, rep.out_len, "lxtest: OK");
+	kprintf("[lx] lxtest              %llu syscalls, exit %d  %s\n", (unsigned long long)rep.syscalls,
+		rc ? rc : rep.exit_code, ok ? "OK" : "FAILED");
+	if (!ok)
+		kprintf("[lx]   output: %s\n", rep.out);
+	return !ok;
 }

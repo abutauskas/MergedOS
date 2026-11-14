@@ -567,6 +567,7 @@ def cmd_sysroot(args):
             tree[dst] = (read(real), 0o755)
     # The dynamic test programs and the helper library dlopen() loads.
     guest = {
+        "bin/lxtest":             "lxtest.linux",
         "bin/dyntest.gnu":        "dyntest.gnu",
         "lib/libdyntest.so":      "libdyntest.so",
         "bin/dyntest.musl":       "dyntest.musl",

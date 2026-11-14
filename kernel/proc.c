@@ -21,6 +21,8 @@
 #define SIGSTOP 19
 #define SIG_DFL 0
 #define SIG_IGN 1
+#define SA_ONSTACK   0x08000000ULL
+#define SA_RESTART   0x10000000ULL
 #define SA_NODEFER   0x40000000ULL
 #define SA_RESETHAND 0x80000000ULL
 #define SIGBIT(s)    (1ULL << ((s) - 1))
@@ -52,7 +54,7 @@ bool task_signal_pending(void)
 {
 	struct thread *th = thread_current();
 
-	return th->proc && (th->proc->sigpending & ~th->sigmask);
+	return th->proc && ((th->proc->sigpending | th->tpending) & ~th->sigmask);
 }
 
 /* ---- exit and wait ------------------------------------------------------------- */
@@ -368,7 +370,7 @@ long msys_execve(struct task *t, u64 upath, u64 uargv, u64 uenvp)
 	struct thread *self = thread_current();
 	struct exec_args *a = kzalloc(sizeof(*a));
 	struct task *save = kzalloc(sizeof(*save));
-	char path[128];
+	char path[256];
 	const char *base;
 	struct user_start start;
 	struct trap_frame *tf;
@@ -387,16 +389,25 @@ long msys_execve(struct task *t, u64 upath, u64 uargv, u64 uenvp)
 		rc = copy_vec(t, uenvp, a, &a->envc);
 	if (rc >= 0)
 		rc = vfs_image(path, &img, &len);
-	if (rc < 0)
+	if (rc < 0) {
+		if (vfs_debug)
+			kprintf("[lx] execve %s: error %ld\n", path, rc);
 		goto out;
+	}
 	mos_strlcpy(a->path, path, sizeof(a->path));
 
 	memcpy(save, t, sizeof(*t));
+	t->vma = NULL;                          /* the old VMAs stay with `save` until we know */
+	t->nvma = t->vma_cap = 0;
 	rc = task_load_image(t, img, len, a, &start);
 	if (rc) {
+		if (vfs_debug)
+			kprintf("[lx] execve %s: load failed %ld\n", path, rc);
+		umm_release(t);
 		memcpy(t, save, sizeof(*t));    /* the old program carries on */
 		goto out;
 	}
+	umm_release(save);
 	/* Point of no return: switch to the new space and drop the old one. */
 	vmm_switch(t->pml4);
 	if (save->mm_borrowed) {
@@ -525,28 +536,51 @@ long msys_sigprocmask(struct task *t, int how, u64 uset, u64 uold)
 enum { R8, R9, R10, R11, R12, R13, R14, R15, RDI, RSI, RBP, RBX, RDX, RAX, RCX, RSP, RIP,
        EFL, CSGSFS, ERR, TRAPNO, OLDMASK, CR2, NGREG };
 
+static u64 ns_to_ticks(u64 ns);
+
+/* What a handler learns about its signal (siginfo, and the fault fields of ucontext). */
+struct sig_cause {
+	int code;                       /* si_code */
+	u64 addr;                       /* si_addr for faults */
+	bool fault;
+	u32 trapno, err;
+};
+
 static bool setup_frame(struct task *t, struct thread *th, struct trap_frame *tf, int sig,
-			const struct sigact *act)
+			const struct sigact *act, const struct sig_cause *why)
 {
 	u8 fx[512] __attribute__((aligned(16)));
 	u8 uc[UC_SIZE] = { 0 };
 	u8 si[SI_SIZE] = { 0 };
 	u64 g[NGREG] = { 0 };
-	u64 fxp = ALIGN_DOWN(tf->rsp - 128 - sizeof(fx), 64);
+	bool onalt = (act->flags & SA_ONSTACK) && th->ss_size && !(th->ss_flags & 2) &&
+		     !(tf->rsp >= th->ss_sp && tf->rsp < th->ss_sp + th->ss_size);
+	u64 top = onalt ? th->ss_sp + th->ss_size : tf->rsp - 128;     /* skip the red zone */
+	u64 fxp = ALIGN_DOWN(top - sizeof(fx), 64);
 	u64 sp = ALIGN_DOWN(fxp - UC_SIZE - SI_SIZE - 8, 16) - 8;   /* as after a CALL */
 	u64 ucp = sp + 8, sip = sp + 8 + UC_SIZE;
-	s32 si_head[4] = { sig, 0, 0, 0 };      /* signo, errno, code SI_USER, pad */
+	s32 si_head[3] = { sig, 0, why ? why->code : 0 };       /* signo, errno, code (SI_USER) */
+	u64 stk[3] = { th->ss_sp, th->ss_flags | (th->ss_size && onalt ? 0 : 0), th->ss_size };
 
 	g[R8] = tf->r8;   g[R9] = tf->r9;   g[R10] = tf->r10; g[R11] = tf->r11;
 	g[R12] = tf->r12; g[R13] = tf->r13; g[R14] = tf->r14; g[R15] = tf->r15;
 	g[RDI] = tf->rdi; g[RSI] = tf->rsi; g[RBP] = tf->rbp; g[RBX] = tf->rbx;
 	g[RDX] = tf->rdx; g[RAX] = tf->rax; g[RCX] = tf->rcx; g[RSP] = tf->rsp;
 	g[RIP] = tf->rip; g[EFL] = tf->rflags; g[CSGSFS] = USER_CS; g[OLDMASK] = th->sigmask;
+	if (why && why->fault) {
+		g[ERR] = why->err;
+		g[TRAPNO] = why->trapno;
+		g[CR2] = why->addr;
+	}
+	memcpy(uc + 16, stk, 24);                               /* uc_stack */
 	memcpy(uc + UC_MCONTEXT, g, sizeof(g));
 	memcpy(uc + UC_MCONTEXT + NGREG * 8, &fxp, 8);         /* fpregs pointer */
 	memcpy(uc + UC_SIGMASK, &th->sigmask, 8);
 	memcpy(si, si_head, sizeof(si_head));
-	memcpy(si + 16, &t->pid, 4);                            /* si_pid */
+	if (why && why->fault)
+		memcpy(si + 16, &why->addr, 8);                 /* si_addr */
+	else
+		memcpy(si + 16, &t->pid, 4);                    /* si_pid */
 	fpu_save(fx);
 	if (uaccess_copy_out(t, fxp, fx, sizeof(fx)) || uaccess_copy_out(t, ucp, uc, sizeof(uc)) ||
 	    uaccess_copy_out(t, sip, si, sizeof(si)) ||
@@ -564,34 +598,185 @@ static bool setup_frame(struct task *t, struct thread *th, struct trap_frame *tf
 	return true;
 }
 
+/* Run (or default-handle) the signal `sig` for the current thread. */
+static bool deliver_one(struct task *t, struct thread *th, struct trap_frame *tf, int sig,
+			const struct sig_cause *why)
+{
+	struct sigact *act = &t->sig[sig];
+
+	if (sig == SIGKILL || act->handler == SIG_DFL) {
+		if (DEFAULT_IGNORE & SIGBIT(sig))
+			return false;
+		task_exit_group(t, 128 + sig, sig);
+	}
+	if (act->handler == SIG_IGN)
+		return false;
+	if (th->restart && (act->flags & SA_RESTART)) {         /* run the interrupted call again */
+		tf->rax = th->restart_nr;
+		tf->rip -= 2;
+	}
+	th->restart = false;
+	if (!setup_frame(t, th, tf, sig, act, why))
+		task_exit_group(t, 128 + SIGSEGV, SIGSEGV);
+	if (act->flags & SA_RESETHAND)
+		act->handler = SIG_DFL;
+	return true;
+}
+
 void task_signal_deliver(struct trap_frame *tf)
 {
 	struct thread *th = thread_current();
 	struct task *t = th->proc;
 
 	while (t) {
-		u64 pend = t->sigpending & ~th->sigmask;
-		struct sigact *act;
+		u64 pend = (t->sigpending | th->tpending) & ~th->sigmask;
 		int sig;
 
 		if (!pend)
 			return;
 		sig = __builtin_ctzll(pend) + 1;
-		t->sigpending &= ~SIGBIT(sig);
-		act = &t->sig[sig];
-		if (sig == SIGKILL || act->handler == SIG_DFL) {
-			if (DEFAULT_IGNORE & SIGBIT(sig))
-				continue;
-			task_exit_group(t, 128 + sig, sig);
-		}
-		if (act->handler == SIG_IGN)
-			continue;
-		if (!setup_frame(t, th, tf, sig, act))
-			task_exit_group(t, 128 + SIGSEGV, SIGSEGV);
-		if (act->flags & SA_RESETHAND)
-			act->handler = SIG_DFL;
-		return;                         /* one handler at a time */
+		if (th->tpending & SIGBIT(sig))
+			th->tpending &= ~SIGBIT(sig);
+		else
+			t->sigpending &= ~SIGBIT(sig);
+		if (deliver_one(t, th, tf, sig, NULL))
+			return;                 /* one handler at a time */
 	}
+}
+
+/*
+ * A CPU fault in ring 3 of a Linux program with a handler installed becomes a
+ * synchronous signal. Returns false if the process should die instead.
+ */
+bool task_fault_signal(struct trap_frame *tf, int sig, int code, u64 addr)
+{
+	struct thread *th = thread_current();
+	struct task *t = th->proc;
+	struct sigact *act;
+	struct sig_cause why = { .code = code, .addr = addr, .fault = true, .trapno = (u32)tf->vector,
+				 .err = (u32)tf->error };
+
+	if (!t || t->abi.personality != ABI_LINUX)
+		return false;
+	act = &t->sig[sig];
+	if (act->handler == SIG_DFL || act->handler == SIG_IGN || (th->sigmask & SIGBIT(sig)))
+		return false;
+	th->restart = false;
+	if (!setup_frame(t, th, tf, sig, act, &why))
+		return false;
+	if (act->flags & SA_RESETHAND)
+		act->handler = SIG_DFL;
+	return true;
+}
+
+/* sigaltstack(ss, old) */
+long task_sigaltstack(struct task *t, u64 uss, u64 uold)
+{
+	struct thread *th = thread_current();
+	u64 old[3] = { th->ss_sp, th->ss_size ? 0 : 2, th->ss_size };      /* SS_DISABLE when unset */
+	u64 ss[3];
+
+	if (uold && uaccess_copy_out(t, uold, old, sizeof(old)))
+		return -MERR_FAULT;
+	if (!uss)
+		return 0;
+	if (uaccess_copy_in(t, ss, uss, sizeof(ss)))
+		return -MERR_FAULT;
+	if (ss[1] & 2) {
+		th->ss_sp = th->ss_size = 0;
+		th->ss_flags = 0;
+		return 0;
+	}
+	if (ss[2] < 2048)
+		return -MERR_NOMEM;
+	th->ss_sp = ss[0];
+	th->ss_size = ss[2];
+	th->ss_flags = 0;
+	return 0;
+}
+
+/* tgkill/tkill: a signal for one thread. */
+long task_tgkill(struct task *t, int tgid, int tid, int sig)
+{
+	(void)t;
+	if (sig < 0 || sig > TASK_NSIG || tid <= 0)
+		return -MERR_INVAL;
+	for (int i = 0; i < SCHED_MAX_THREADS; i++) {
+		struct thread *th = thread_slot(i);
+
+		if (!thread_alive(i) || !th->proc || th->tid != tid || (tgid > 0 && th->proc->pid != tgid))
+			continue;
+		if (sig && !sig_ignored(th->proc, sig)) {
+			th->tpending |= SIGBIT(sig);
+			thread_wake_proc(th->proc);
+		}
+		return 0;
+	}
+	if (tgid > 0 && tid == tgid)
+		return msys_kill(t, tid, sig);          /* the main thread keeps the pid as its tid */
+	return -MERR_SRCH;
+}
+
+/* rt_sigtimedwait(set, info, timeout, size): consume one pending signal of `set`. */
+long task_sigtimedwait(struct task *t, u64 uset, u64 uinfo, u64 utimeout)
+{
+	struct thread *th = thread_current();
+	u64 set, ticks = 0, ts[2];
+
+	if (uaccess_copy_in(t, &set, uset, 8))
+		return -MERR_FAULT;
+	if (utimeout) {
+		if (uaccess_copy_in(t, ts, utimeout, sizeof(ts)))
+			return -MERR_FAULT;
+		ticks = ns_to_ticks(ts[0] * 1000000000ULL + ts[1]);
+	}
+	for (;;) {
+		u64 pend = (t->sigpending | th->tpending) & set;
+
+		if (pend) {
+			int sig = __builtin_ctzll(pend) + 1;
+			u8 si[SI_SIZE] = { 0 };
+			s32 head[3] = { sig, 0, 0 };
+
+			if (th->tpending & SIGBIT(sig))
+				th->tpending &= ~SIGBIT(sig);
+			else
+				t->sigpending &= ~SIGBIT(sig);
+			memcpy(si, head, sizeof(head));
+			memcpy(si + 16, &t->pid, 4);
+			if (uinfo && uaccess_copy_out(t, uinfo, si, sizeof(si)))
+				return -MERR_FAULT;
+			return sig;
+		}
+		if (task_signal_pending())
+			return -MERR_INTR;
+		if (!thread_block(th, 0, ticks) && utimeout)
+			return -MERR_AGAIN;
+	}
+}
+
+/* rt_sigpending(set) and rt_sigsuspend(mask) */
+long task_sigpending(struct task *t, u64 uset)
+{
+	struct thread *th = thread_current();
+	u64 p = (t->sigpending | th->tpending) & th->sigmask;
+
+	return uaccess_copy_out(t, uset, &p, 8) ? -MERR_FAULT : 0;
+}
+
+long task_sigsuspend(struct task *t, u64 umask)
+{
+	struct thread *th = thread_current();
+	u64 old = th->sigmask, m;
+
+	if (uaccess_copy_in(t, &m, umask, 8))
+		return -MERR_FAULT;
+	th->sigmask = m & ~UNBLOCKABLE;
+	while (!task_signal_pending())
+		thread_block(th, 0, 0);
+	th->restart = false;
+	th->sigmask = old;
+	return -MERR_INTR;
 }
 
 long msys_sigreturn(struct task *t)

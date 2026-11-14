@@ -34,7 +34,8 @@
 
 void kmain(u32 mb_magic, u32 mb_info);
 u32 pmm_ref_entries(void);
-int wine_boot_check(void);              /* kernel/winetest.c */
+int wine_boot_check(void);
+int lxtest_boot_check(void);              /* kernel/winetest.c */
 
 static struct hw_profile hw;
 static struct install_config install = { .desktop = DESKTOP_AUTO };
@@ -357,6 +358,7 @@ static int abi_boot_check(void)
 			(long long)(before.free_frames - after.free_frames), pmm_ref_entries());
 		failures++;
 	}
+	failures += lxtest_boot_check();
 	/* Wine's own Linux stack (needs its module and RAM; see docs/WINE_STACK.md). */
 	if (after.usable_frames * 4 >= 400 * 1024)
 		failures += wine_boot_check();
@@ -406,7 +408,10 @@ void kmain(u32 mb_magic, u32 mb_info)
 	vfs_init();
 
 	if (boot_cmdline_get("winetest", NULL, 0)) {    /* development: only Wine, then power off */
-		int bad = wine_boot_check();
+		int bad = lxtest_boot_check();
+
+		if (!boot_cmdline_get("nowine", NULL, 0))
+			bad += wine_boot_check();
 
 		kprintf("\nMERGEDOS-WINETEST: %s\n", bad ? "FAIL" : "PASS");
 		machine_poweroff(bad ? 0x11 : 0x10);

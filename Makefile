@@ -109,6 +109,10 @@ KERNEL_C := \
 	kernel/sched.c \
 	kernel/syscall.c \
 	kernel/umm.c \
+	kernel/lxsys.c \
+	kernel/lxpoll.c \
+	kernel/socket.c \
+	kernel/unix.c \
 	kernel/winetest.c \
 	kernel/initrd.c \
 	kernel/monitor.c \
@@ -266,7 +270,12 @@ $(BUILD)/guest/dyntest.musl: src/guest/dyntest.c $(BUILD)/guest/libdyntest-musl.
 		$(MUSL_CC) -O2 -s -DLIBC_NAME='"musl"' -DDLLIB='"/lib/libdyntest-musl.so"' \
 			-o $@ $<; \
 	else echo "note: $(MUSL_CC) not found, dyntest.musl left out"; : > $@; fi
-DYN_BINS := $(BUILD)/guest/dyntest.gnu $(BUILD)/guest/libdyntest.so \
+$(BUILD)/guest/lxtest.linux: src/guest/lxtest.c
+	@mkdir -p $(dir $@)
+	@if command -v $(MUSL_CC) >/dev/null 2>&1; then \
+		$(MUSL_CC) -static -no-pie -O1 -s -o $@ $<; \
+	else echo "note: $(MUSL_CC) not found, lxtest left out"; : > $@; fi
+DYN_BINS := $(BUILD)/guest/lxtest.linux $(BUILD)/guest/dyntest.gnu $(BUILD)/guest/libdyntest.so \
 	    $(BUILD)/guest/dyntest.musl $(BUILD)/guest/libdyntest-musl.so
 GUEST_BINS += $(DYN_BINS)
 

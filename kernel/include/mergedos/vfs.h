@@ -111,6 +111,7 @@ long vfs_mmap_source(struct task *t, int fd, u64 offset, const u8 **data, bool *
 void stdin_feed(int c);                         /* from task_keyboard_pump() */
 void stdin_drain_to_console(void);              /* unread input back to the shell */
 extern int fg_pgid;
+extern bool vfs_debug;                          /* log failed opens and execs */
 
 /* ---- path-based services (the Linux layer's building blocks) ---------------------- */
 #define VFS_AT_FDCWD (-100)
@@ -134,6 +135,7 @@ long vfs_access_at(struct task *t, int dirfd, u64 upath, u32 mode);
 long vfs_pwrite(struct task *t, struct file *f, u64 ubuf, u64 len, u64 off);
 long vfs_ftruncate(struct task *t, struct file *f, u64 size);
 long vfs_getdents(struct task *t, int fd, u64 ubuf, u64 count);
+long vfs_sock_path(struct task *t, const char *path, bool create, struct rnode **out);
 long vfs_memfd_create(struct task *t, const char *name, u32 flags);
 
 /* poll support: wake every blocked poll/epoll/select when any pollable object changes. */
