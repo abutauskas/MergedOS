@@ -56,4 +56,19 @@ for mem in "$@"; do
 		status=1
 	fi
 done
+# The same boot on QEMU's default NIC (Intel e1000): lease, ping and DNS must work too.
+mem=$1
+timeout "$TIMEOUT" "$QEMU" -m "$mem" -no-reboot -display none -serial stdio \
+	-netdev user,id=n0 -device e1000,netdev=n0 \
+	-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
+	-kernel "$KERNEL" $mod -append "selftest${PORT:+ nettest=$PORT}" >"$LOG" 2>&1
+rc=$?
+if [ "$rc" -eq 33 ] && grep -q '^\[net\] ping .*reply' "$LOG" && grep -q '^\[net\] e1000: DHCP lease' "$LOG" \
+   && { [ -z "$PORT" ] || grep -q 'nettest.linux: exit 0  OK' "$LOG"; }; then
+	echo "boot-test: e1000 NIC  PASS  (DHCP, ping, DNS$([ -n "$PORT" ] && echo ', HTTP GET'))"
+else
+	echo "boot-test: e1000 NIC  FAIL  (qemu exit ${rc}); net lines:"
+	grep '^\[net\]' "$LOG"
+	status=1
+fi
 exit $status

@@ -79,4 +79,20 @@ descriptor. SOCK_NONBLOCK/SOCK_CLOEXEC, MSG_DONTWAIT, MSG_PEEK.
 
 ## Status
 
-See the end of this file (updated at each step).
+Implemented as specified, all in `make test`:
+
+- virtio-net (legacy/transitional PCI, I/O BAR) and e1000 (82540EM family),
+  both polled by the `netd` thread once per timer tick (about 10 ms of
+  latency; spinning starves QEMU's timer). Both run the full boot test.
+- Stack, DHCP, resolv.conf (`/etc/resolv.conf` and `/etc/hosts` are
+  single-file ramfs mounts; the rest of `/etc` stays read-only), loopback,
+  AF_INET sockets, host tests with a lossy two-stack wire.
+- Footprint: kernel footprint 872 KiB at the end of the boot test (base 664):
+  about 100 KiB of NIC rings and buffers, 16 KiB netd stack, the stack code
+  and static socket tables.
+
+Not done: IPv6, IP fragmentation/reassembly, TCP window scaling/SACK/
+timestamps, delayed ACK, keep-alive probes, SO_RCVTIMEO/SNDTIMEO (accepted,
+ignored), raw and ping sockets, modern-only virtio (0x1041), interrupt-driven
+receive, DHCP renewal, poll/epoll (shared layer), `SO_LINGER`, MSG_OOB,
+fstat reports sockets as FIFOs, ISNs are not cryptographically random.
