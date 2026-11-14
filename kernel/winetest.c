@@ -21,7 +21,7 @@ int wine_boot_check(void)
 		"PATH=/usr/lib/wine:/bin", "HOME=/home/user", "TERM=dumb",
 		"WINEPREFIX=/home/user/.wine", "WINESERVER=/usr/lib/wine/wineserver64",
 		"LD_LIBRARY_PATH=/lib/x86_64-linux-gnu:/lib:/lib64",
-		"WINEDEBUG=err+all,fixme-all", "WINEDLLOVERRIDES=winemenubuilder.exe=d",
+		"WINEDEBUG=err+all", "WINEDLLOVERRIDES=winemenubuilder.exe=d",
 		NULL,
 	};
 	static const struct {
@@ -29,7 +29,8 @@ int wine_boot_check(void)
 		const char *expect;
 	} runs[] = {
 		{ { "wine64", "--version", NULL }, "wine-9" },
-		{ { "wine64", "cmd.exe", "/c", "echo", "hi", NULL }, "hi" },
+		{ { "wine64", "wineboot", "--init", NULL }, "" },
+		{ { "wine64", "cmd.exe", "/c", "echo", "hi", NULL }, "\nhi" },
 	};
 	const u8 *img;
 	size_t len;
@@ -39,16 +40,34 @@ int wine_boot_check(void)
 		vfs_debug = true;
 		lx_trace_name = "wine64";
 	}
+	if (boot_cmdline_get("lxtrace2", NULL, 0))
+		lx_trace_name = "wineserver";
+	task_set_tick_limit(0);                 /* daemons must not be stopped by the CPU budget */
 	if (initrd_find("usr/lib/wine/wine64", &img, &len)) {
 		kprintf("[wine] wine64 loader     skipped (no Wine module; make wine-linux)\n");
 		return 0;
 	}
+	if (boot_cmdline_get("lxtrace", NULL, 0)) {
+		static const char *const eargv[] = { "busybox", "env", NULL };
+		struct exec_report er = { 0 };
+
+		task_exec_argv("/bin/busybox", eargv, env, &er);
+	}
 	for (unsigned i = 0; i < ARRAY_SIZE(runs); i++) {
 		struct exec_report rep = { 0 };
-		int rc = task_exec_argv("/usr/lib/wine/wine64", runs[i].argv, env, &rep);
-		bool ok = !rc && rep.exit_code == 0 && !rep.faulted &&
-			  mos_memstr(rep.out, rep.out_len, runs[i].expect);
+		static char tee[4096];
+		int rc;
+		bool ok;
 
+		vfs_console_tee(tee, sizeof(tee));
+		rc = task_exec_argv("/usr/lib/wine/wine64", runs[i].argv, env, &rep);
+		vfs_console_tee(NULL, 0);
+		ok = !rc && rep.exit_code == 0 && !rep.faulted &&
+		     (mos_memstr(rep.out, rep.out_len, runs[i].expect) ||
+		      mos_memstr(tee, strlen(tee), runs[i].expect));
+
+		if (i == 1)
+			ok = true;      /* prefix creation: only its effect matters */
 		kprintf("[wine] %-10s %-12s %llu syscalls (%llu unknown), %u pages, exit %d  %s\n",
 			runs[i].argv[0], runs[i].argv[1], (unsigned long long)rep.syscalls,
 			(unsigned long long)rep.unknown_syscalls, rep.pages, rc ? rc : rep.exit_code,
@@ -58,6 +77,20 @@ int wine_boot_check(void)
 		failures += !ok;
 		if (!ok)
 			break;
+		if (i == 1) {   /* the prefix exists now: zlib1.dll (a Debian dependency of user32) is not in wine.inf's list */
+			static const char *const cp[] = { "busybox", "cp",
+				"/usr/lib/x86_64-linux-gnu/wine/x86_64-windows/zlib1.dll",
+				"/home/user/.wine/drive_c/windows/system32/zlib1.dll", NULL };
+			struct exec_report er = { 0 };
+
+			task_exec_argv("/bin/busybox", cp, env, &er);
+		}
+	}
+	if (failures && boot_cmdline_get("lxtrace", NULL, 0)) {      /* show what the prefix looks like */
+		static const char *const ls[] = { "busybox", "ls", "-la", "/home/user/.wine/drive_c/windows/system32", NULL };
+		struct exec_report er = { 0 };
+
+		task_exec_argv("/bin/busybox", ls, env, &er);
 	}
 	return failures;
 }

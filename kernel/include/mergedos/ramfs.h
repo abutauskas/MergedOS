@@ -10,7 +10,7 @@
  */
 #include <mergedos/compat.h>
 
-#define RAMFS_NAME_MAX 60
+#define RAMFS_NAME_MAX 256
 #define RAMFS_FILE_MAX (64ULL << 20)
 
 struct rnode {

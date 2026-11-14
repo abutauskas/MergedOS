@@ -111,6 +111,7 @@ long vfs_mmap_source(struct task *t, int fd, u64 offset, const u8 **data, bool *
 void stdin_feed(int c);                         /* from task_keyboard_pump() */
 void stdin_drain_to_console(void);              /* unread input back to the shell */
 extern int fg_pgid;
+void vfs_console_tee(char *buf, size_t cap);    /* collect all console output (NULL stops) */
 extern bool vfs_debug;                          /* log failed opens and execs */
 
 /* ---- path-based services (the Linux layer's building blocks) ---------------------- */

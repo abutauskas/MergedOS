@@ -20,16 +20,19 @@ mods=""
 [ -n "$SYSROOT" ] && [ -s "$SYSROOT" ] && mods="$SYSROOT"
 # The ntdll runtime and Wine's DLLs (when fetched): a second module.
 [ -n "${BOOT_MODULE:-}" ] && [ -f "$BOOT_MODULE" ] && mods="${mods:+$mods,}$BOOT_MODULE"
-[ -n "${WINE_MODULE:-}" ] && [ -f "$WINE_MODULE" ] && mods="${mods:+$mods,}$WINE_MODULE"
-mod=""
-[ -n "$mods" ] && mod="-initrd $mods"
+wine_mods=""
+[ -n "${WINE_MODULE:-}" ] && [ -f "$WINE_MODULE" ] && wine_mods="${mods:+$mods,}$WINE_MODULE"
 
 LOG=$(mktemp)
 trap 'rm -f "$LOG"' EXIT
 status=0
 
 for mem in "$@"; do
-	timeout "$TIMEOUT" "$QEMU" -m "$mem" -no-reboot -display none -serial stdio \
+	# Wine's stack (a big module) is attached, with a long timeout, to the large-memory run only.
+	mod=""; t=$TIMEOUT
+	[ -n "$mods" ] && mod="-initrd $mods"
+	if [ "$mem" -ge 1024 ] && [ -n "$wine_mods" ]; then mod="-initrd $wine_mods"; t=${WINE_TIMEOUT:-600}; fi
+	timeout "$t" "$QEMU" -m "$mem" -no-reboot -display none -serial stdio \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 \
 		-kernel "$KERNEL" $mod -append "selftest" >"$LOG" 2>&1
 	rc=$?

@@ -382,7 +382,19 @@ static long null_read(struct task *t, struct file *f, u64 ubuf, u64 len)
 
 static long null_write(struct task *t, struct file *f, u64 ubuf, u64 len)
 {
-	(void)t; (void)f; (void)ubuf;
+	(void)f;
+	if (vfs_debug) {                        /* development: show what daemons send to /dev/null */
+		char chunk[128];
+
+		for (u64 done = 0; done < len;) {
+			size_t n = (size_t)MOS_MIN(len - done, sizeof(chunk));
+
+			if (uaccess_copy_in(t, chunk, ubuf + done, n))
+				break;
+			console_write(chunk, n);
+			done += n;
+		}
+	}
 	return (long)len;
 }
 
@@ -1126,6 +1138,19 @@ static long pipe_write(struct task *t, struct file *f, u64 ubuf, u64 len)
 
 /* ---- reading and writing ---------------------------------------------------------- */
 
+/* Everything any process writes to the console while a test listens (child processes included). */
+static char *tee_buf;
+static size_t tee_cap, tee_len;
+
+void vfs_console_tee(char *buf, size_t cap)
+{
+	tee_buf = buf;
+	tee_cap = cap;
+	tee_len = 0;
+	if (buf && cap)
+		buf[0] = '\0';
+}
+
 static long console_out(struct task *t, u64 ubuf, u64 len)
 {
 	char chunk[128];
@@ -1137,6 +1162,11 @@ static long console_out(struct task *t, u64 ubuf, u64 len)
 		if (uaccess_copy_in(t, chunk, ubuf + done, n))
 			return done ? (long)done : -MERR_FAULT;
 		console_write(chunk, n);
+		if (tee_buf && tee_len + n + 1 <= tee_cap) {
+			memcpy(tee_buf + tee_len, chunk, n);
+			tee_len += n;
+			tee_buf[tee_len] = '\0';
+		}
 		if (t->out_len < sizeof(t->out)) {
 			size_t keep = MOS_MIN(n, sizeof(t->out) - t->out_len);
 
