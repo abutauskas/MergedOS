@@ -108,6 +108,8 @@ KERNEL_C := \
 	kernel/ntload.c \
 	kernel/sched.c \
 	kernel/syscall.c \
+	kernel/umm.c \
+	kernel/winetest.c \
 	kernel/initrd.c \
 	kernel/monitor.c \
 	kernel/arch/x86_64/cpu.c \
@@ -381,7 +383,7 @@ WINE_PE    := kernel32.dll kernelbase.dll ucrtbase.dll msvcrt.dll advapi32.dll s
 	cmd.exe reg.exe hostname.exe whoami.exe
 WINE_NLS   := locale.nls l_intl.nls c_437.nls c_1252.nls c_20127.nls normnfc.nls normnfd.nls normidna.nls sortdefault.nls
 
-.PHONY: wine wine-optional
+.PHONY: wine wine-optional wine-linux
 wine: $(WINE_TAR)
 
 # Never fails: tests run without Wine when it cannot be fetched.
@@ -509,5 +511,18 @@ $(ISO): $(KERNEL_ELF) tools/grub.cfg $(USER_TAR) $(SYSROOT)
 .PHONY: clean
 clean:
 	rm -rf $(BUILD)
+
+# ---- Wine's own Linux stack (loader, ntdll.so, wineserver, PE DLLs) -------------
+# Fetched at build time, never committed, never run on the host; docs/WINE_STACK.md.
+WINE_LX     := $(BUILD)/wine/lx
+WINE_LX_TAR := $(BUILD)/wine/lx.tar
+wine-linux: $(WINE_LX_TAR)
+$(WINE_LX_TAR): tools/wine_pack.py
+	@mkdir -p $(WINE_LX)/deb
+	@ls $(WINE_LX)/deb/wine64_*.deb >/dev/null 2>&1 || \
+		(cd $(WINE_LX)/deb && apt-get download wine64 libwine libunwind8 liblzma5 libgcc-s1 >/dev/null 2>&1)
+	@for d in $(WINE_LX)/deb/*.deb; do n=$$(basename $$d .deb); \
+		[ -d $(WINE_LX)/x/$$n ] || { mkdir -p $(WINE_LX)/x/$$n && dpkg-deb -x $$d $(WINE_LX)/x/$$n; }; done
+	$(PYTHON) tools/wine_pack.py $@ $$(command -v $(WINE_STRIP) || echo cp) $(WINE_LX)/x/*
 
 -include $(KDEPS)

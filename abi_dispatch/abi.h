@@ -182,6 +182,7 @@ long msys_nanosleep(struct task *t, u64 ns);
 /* Add rights (MSYS_PROT_*) to pages that are already mapped; never removes any. */
 #define MSYS_PROT_W 0x2
 #define MSYS_PROT_X 0x4
+#define MSYS_PROT_NONE 0x8      /* with no other bit: PROT_NONE */
 long msys_protect(struct task *t, u64 addr, u64 len, u32 prot);
 
 /*

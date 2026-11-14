@@ -9,9 +9,10 @@
 
 #define TASK_NAME_MAX    48
 #define TASK_CAPTURE_MAX 256
-#define TASK_FD_MAX      32
-#define TASK_VMA_MAX     64
-#define TASK_VM_LIMIT    (1ULL << 30)  /* virtual memory a process may reserve */
+#define TASK_FD_MAX      1024
+#define TASK_CWD_MAX     192
+#define TASK_VM_LIMIT    (1ULL << 47)  /* address space a process may reserve (lazily backed) */
+#define TASK_PAGE_LIMIT  (1u << 18)    /* pages a process may actually hold: 1 GiB */
 #define TASK_MMAP_BASE   0x0000100000000000ULL
 #define USER_STACK_TOP   0x00007FFFFFFFF000ULL
 #define USER_STACK_PAGES 16             /* mapped at exec; the rest on demand */
@@ -22,15 +23,22 @@ struct file;
 struct thread;
 
 /*
- * A reserved range of the address space, backed on first touch by a zeroed
- * page, or for a file mapping by a private copy of the file's bytes: `src`
- * holds the bytes for `start` onwards, `srclen` of them (zeros after that).
+ * A reserved range of the address space, backed on first touch. Private
+ * ranges get a zeroed page, or for an immutable file image a private copy of
+ * its bytes (`src`, `srclen`, zeros after that). Shared ranges (VMA_SHARED
+ * with `file`) map the frames of the ramfs file at `foff` itself. The array
+ * is sorted by address and never overlaps.
  */
+#define VMA_SHARED 0x1
+#define VMA_HEAP   0x2
 struct vma {
 	u64 start, end;
 	u32 prot;                       /* VMM_*, 0 = PROT_NONE */
+	u32 flags;
 	const u8 *src;                  /* immutable file contents, or NULL */
 	u64 srclen;
+	struct file *file;              /* shared file mapping (holds a reference) */
+	u64 foff;
 };
 
 /* Linux kernel layout of struct sigaction (x86-64). */
@@ -68,13 +76,14 @@ struct task {
 	u32 cpu_ticks;                  /* timer ticks spent in user mode          */
 
 	struct file *fd[TASK_FD_MAX];
-	u32 cloexec;                    /* bit per descriptor                      */
+	u32 cloexec[TASK_FD_MAX / 32];  /* bit per descriptor                      */
+	char cwd[TASK_CWD_MAX];         /* canonical, no leading '/'               */
+	u32 umask;
 	u64 brk_start, brk;             /* heap grown by brk()                     */
-	u64 mmap_next;                  /* next address for anonymous mmap()       */
 	u64 gs_base;                    /* NT: the TEB, read through gs:[0x30]      */
 	char exe[128];                  /* path of the program (/proc/self/exe)     */
-	struct vma vma[TASK_VMA_MAX];
-	u32 nvma;
+	struct vma *vma;                /* sorted, see umm.c */
+	u32 nvma, vma_cap;
 
 	struct sigact sig[TASK_NSIG + 1];
 	u64 sigpending;                 /* bit (sig - 1)                           */
@@ -146,6 +155,15 @@ bool task_signal_pending(void);         /* an unblocked signal waits for the cal
 void task_signal_deliver(struct trap_frame *tf);
 int  task_fault_in(struct task *t, u64 va, bool write);         /* demand paging */
 void task_keyboard_pump(struct task *fg);                       /* stdin + Ctrl-C */
+
+/* kernel/umm.c: the process's virtual memory (VMAs, mmap family, faults, fork). */
+struct vma *umm_find(struct task *t, u64 va);
+int  umm_cover(struct task *t, u64 start, u64 end, u32 prot);  /* VMA for the unmapped parts */
+int  umm_fork(struct task *child, const struct task *parent);
+void umm_release(struct task *t);                              /* drop every VMA */
+long umm_protect(struct task *t, u64 addr, u64 len, u32 vmm_prot);
+long umm_mremap(struct task *t, u64 old, u64 oldlen, u64 newlen, u32 flags, u64 newaddr);
+long umm_madvise(struct task *t, u64 addr, u64 len, int advice);
 
 /* Map [va, va + len) into t's address space (VMM_* rights), counting pages. */
 int task_map_range(struct task *t, u64 va, u64 len, u32 vmm_prot);

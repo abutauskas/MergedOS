@@ -277,10 +277,13 @@ long msys_clone(struct task *t, u64 flags, u64 newsp, u64 ptid, u64 ctid, u64 tl
 	c->vm_reserved = t->vm_reserved;
 	c->brk_start = t->brk_start;
 	c->brk = t->brk;
-	c->mmap_next = t->mmap_next;
 	c->gs_base = t->gs_base;
-	memcpy(c->vma, t->vma, sizeof(c->vma));
-	c->nvma = t->nvma;
+	c->umask = t->umask;
+	memcpy(c->cwd, t->cwd, sizeof(c->cwd));
+	if (umm_fork(c, t)) {
+		task_free(c);
+		return -MERR_NOMEM;
+	}
 	memcpy(c->sig, t->sig, sizeof(c->sig));
 	if (share) {
 		c->pml4 = t->pml4;

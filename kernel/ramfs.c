@@ -19,9 +19,49 @@ struct rnode *ramfs_new_root(void)
 	return r;
 }
 
+/*
+ * Buffers of a page or more are page-aligned runs of frames (no header), so
+ * a shared mapping can map them as they are; smaller ones come from kzalloc.
+ */
+#ifdef MERGEDOS_HOSTED
+static void *data_alloc(u64 cap)
+{
+	void *p = cap >= 4096 ? aligned_alloc(4096, (size_t)cap) : NULL;
+
+	if (p)
+		memset(p, 0, (size_t)cap);
+	return p ? p : mos_zalloc((size_t)cap);
+}
+static void data_free(u8 *p, u64 cap)
+{
+	(void)cap;
+	free(p);
+}
+#else
+#include <mergedos/mm.h>
+static void *data_alloc(u64 cap)
+{
+	u64 phys;
+
+	if (cap < 4096)
+		return mos_zalloc((size_t)cap);
+	phys = cap == 4096 ? pmm_alloc() : pmm_alloc_contig(cap >> 12);
+	return phys ? phys_to_virt(phys) : NULL;
+}
+static void data_free(u8 *p, u64 cap)
+{
+	if (!p)
+		return;
+	if (cap < 4096)
+		mos_free(p);
+	else
+		pmm_free_contig((u64)p - DMAP_BASE, cap >> 12);
+}
+#endif
+
 static void free_node(struct rnode *n)
 {
-	mos_free(n->data);
+	data_free(n->data, n->cap);
 	mos_free(n);
 }
 
@@ -134,6 +174,7 @@ int ramfs_create(struct rnode *root, const char *path, bool dir, bool excl, stru
 		return -MERR_NOMEM;
 	memcpy(n->name, leaf, len);
 	n->dir = dir;
+	n->mode = dir ? 0755 : 0644;
 	n->ino = next_ino++;
 	n->parent = parent;
 	n->next = parent->child;
@@ -238,12 +279,12 @@ static int reserve(struct rnode *n, u64 size)
 		return -MERR_RANGE;
 	while (cap < size)
 		cap *= 2;
-	d = mos_zalloc((size_t)cap);
+	d = data_alloc(cap);
 	if (!d)
 		return -MERR_NOMEM;
 	if (n->size)
 		memcpy(d, n->data, (size_t)n->size);
-	mos_free(n->data);
+	data_free(n->data, n->cap);
 	n->data = d;
 	n->cap = cap;
 	return 0;
@@ -282,6 +323,15 @@ int ramfs_truncate(struct rnode *n, u64 size)
 	}
 	n->size = size;
 	return 0;
+}
+
+int ramfs_pin(struct rnode *n, u64 size)
+{
+	if (n->dir)
+		return -MERR_ISDIR;
+	if (n->cap >= 4096 && size <= n->cap)
+		return 0;
+	return reserve(n, size < 4096 ? 4096 : size);
 }
 
 struct rnode *ramfs_entry(const struct rnode *dir, u64 index)

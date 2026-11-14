@@ -71,6 +71,7 @@ struct task *task_new(const char *name)
 	if (!t)
 		return NULL;
 	t->pid = task_new_pid();
+	t->umask = 022;
 	mos_strlcpy(t->name, name, sizeof(t->name));
 	t->next = procs;
 	procs = t;
@@ -86,6 +87,7 @@ static void release_mm(struct task *t)
 		vmm_as_destroy(t->pml4);
 	}
 	t->pml4 = 0;
+	umm_release(t);
 }
 
 void task_free(struct task *t)
@@ -157,14 +159,14 @@ int task_map_range(struct task *t, u64 va, u64 len, u32 prot)
 	if (end < va || va < USER_MIN || end > USER_STACK_TOP - USER_STACK_MAX)
 		return -MERR_NOEXEC;
 	for (u64 page = ALIGN_DOWN(va, PAGE_SIZE); page < end; page += PAGE_SIZE) {
-		if (t->pages >= TASK_VM_LIMIT / PAGE_SIZE)
+		if (t->pages >= TASK_PAGE_LIMIT)
 			return -MERR_NOMEM;
 		if (!vmm_user_to_phys(t->pml4, page))
 			t->pages++;
 		if (!vmm_map_user(t->pml4, page, prot))
 			return -MERR_NOMEM;
 	}
-	return 0;
+	return umm_cover(t, va, end, prot) ? -MERR_NOMEM : 0;
 }
 
 static int load_segments(struct task *t, const u8 *image, const struct exec_plan *plan, u64 bias)
@@ -191,9 +193,8 @@ static int load_segments(struct task *t, const u8 *image, const struct exec_plan
 
 		if (s->memsz == 0 || (s->prot & EXEC_PROT_W))
 			continue;
-		for (u64 page = ALIGN_DOWN(va, PAGE_SIZE); page < va + s->memsz; page += PAGE_SIZE)
-			if (vmm_user_to_phys(t->pml4, page))
-				vmm_remap_user(t->pml4, page, to_vmm_prot(s->prot));
+		umm_protect(t, ALIGN_DOWN(va, PAGE_SIZE), ALIGN_UP(va + s->memsz, PAGE_SIZE) -
+			    ALIGN_DOWN(va, PAGE_SIZE), to_vmm_prot(s->prot));
 	}
 	return 0;
 }
@@ -235,8 +236,8 @@ static int build_stack(struct task *t, const struct exec_plan *plan, const struc
 			return -MERR_NOMEM;
 	t->pages += USER_STACK_PAGES;
 	/* The rest of the stack is reserved and filled in on demand. */
-	t->vma[t->nvma++] = (struct vma){ USER_STACK_TOP - USER_STACK_MAX, base,
-					  VMM_R | VMM_W, NULL, 0 };
+	if (umm_cover(t, USER_STACK_TOP - USER_STACK_MAX, USER_STACK_TOP, VMM_R | VMM_W))
+		return -MERR_NOMEM;
 
 	memset(start, 0, sizeof(*start));
 	start->rip = dyn->rip;
@@ -367,8 +368,7 @@ int task_load_image(struct task *t, const u8 *image, size_t len, const struct ex
 	t->pml4 = vmm_as_create();
 	t->mm_borrowed = false;
 	t->pages = 0;
-	t->nvma = 0;
-	t->vm_reserved = 0;
+	umm_release(t);
 	t->gs_base = 0;
 	t->brk_start = 0;
 	if (!t->pml4)
@@ -392,7 +392,6 @@ int task_load_image(struct task *t, const u8 *image, size_t len, const struct ex
 				       ALIGN_UP(plan.seg[i].vaddr + plan.seg[i].memsz + main_bias,
 						PAGE_SIZE));
 	t->brk = t->brk_start;
-	t->mmap_next = TASK_MMAP_BASE;
 
 	/* Darwin: LC_MAIN is a C function only dyld may call. */
 	if (!rc && plan.info.personality == ABI_XNU && plan.lc_main && !plan.interp_len)
@@ -680,7 +679,8 @@ void task_user_fault(struct trap_frame *tf, u64 fault_addr)
 
 	if (!t)
 		panic("ring-3 trap %u with no current task", (unsigned)tf->vector);
-	if (tf->vector == 14 && !(tf->error & 1) && !task_fault_in(t, fault_addr, tf->error & 2))
+	if (tf->vector == 14 && (!(tf->error & 1) || (tf->error & 2)) &&
+	    !task_fault_in(t, fault_addr, tf->error & 2))
 		return;                         /* a reserved page, now backed */
 	t->faulted = true;
 	t->fault_vector = (u32)tf->vector;

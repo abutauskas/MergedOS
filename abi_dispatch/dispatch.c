@@ -56,6 +56,10 @@ void abi_dispatch(struct abi_ctx *ctx, struct syscall_frame *f)
 		ret = -MERR_NOSYS;
 		ctx->stats.unknown++;
 		ctx->stats.last_unknown_nr = call.nr;
+#ifndef MERGEDOS_HOSTED
+		if (ctx->personality == ABI_LINUX)
+			kprintf("[lx] ENOSYS: syscall %llu\n", (unsigned long long)call.nr);
+#endif
 	}
 	if (ret < 0)
 		ctx->stats.errors++;
