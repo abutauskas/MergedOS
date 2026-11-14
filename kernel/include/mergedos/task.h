@@ -8,7 +8,7 @@
 #include "abi_dispatch/binfmt.h"
 
 #define TASK_NAME_MAX    48
-#define TASK_CAPTURE_MAX 256
+#define TASK_CAPTURE_MAX 1024
 #define TASK_FD_MAX      1024
 #define TASK_CWD_MAX     192
 #define TASK_VM_LIMIT    (1ULL << 47)  /* address space a process may reserve (lazily backed) */

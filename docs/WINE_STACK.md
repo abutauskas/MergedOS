@@ -51,11 +51,24 @@ select/pselect6/epoll/eventfd, SA_SIGINFO signals with ucontext/fpstate,
 sigaltstack, faults as signals, SA_RESTART, tgkill, rt_sigtimedwait, cwd,
 dirfds, symlinks, /dev and /proc/self files, 1024 descriptors.
 
-Running today: `wine64 --version`; the Wine loader loads `ntdll.so`, starts a
-separate `wineserver64`, creates the prefix, connects, runs `wineboot` which
-spawns `services.exe` and `rundll32` (wine.inf). Not working: `rundll32`
-aborts on an unresolved `user32.dll.CreateDialogParamW` import, so wineboot
-never finishes and `cmd.exe` fails with c0000135 (kernel32 not found in the
-unpopulated prefix). The Wine step of the self-test is therefore reported
-but not counted. Not done: futex REQUEUE/robust lists, timerfd, a real
-`/proc` beyond maps/meminfo/cpuinfo, Wine's debug output is not visible.
+Result: `wine64 cmd.exe /c echo hi` runs and prints `hi` in the boot self-test
+(1536 MiB run; counted as a real pass when the module is present). Sequence:
+`wine64 --version`, `wine64 wineboot --init` (creates the prefix: `wineserver64`
+as a separate process, `services.exe`, `rundll32` running wine.inf), a copy of
+`zlib1.dll` into the prefix's system32 (user32 imports it; wine.inf does not
+list it), then `wine64 cmd.exe /c echo hi`.
+
+What the earlier `user32.dll.CreateDialogParamW` failure was: not the kernel.
+user32 imports `zlib1.dll` (Debian's libz-mingw-w64), which was missing from
+the module, so user32 failed to load and Wine bound a stub. `wine_pack.py` now
+adds that DLL and the transitive import closure (including delay-load imports).
+wine.inf's registration steps load most of Wine's DLLs, so the module carries
+all of x86_64-windows (stripped, 200 MB) and the prefix holds full copies as
+fake DLLs; that needs about 1 GiB of RAM.
+
+Notes: Wine's WINEDEBUG output never appears (this Debian build has it
+compiled out); `lxtrace` / `lxtrace2` on the kernel command line log opens,
+execs and every syscall of wine64 / wineserver. Wine's children get /dev/null
+on fds 0-1; `vfs_console_tee()` collects all console output for the check.
+Not done: timerfd, robust-list handling, a real /proc beyond maps/meminfo/
+cpuinfo, the 32-bit (syswow64) side.

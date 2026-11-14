@@ -451,7 +451,7 @@ static const struct abi_sysent ext[512] = {
 	X(262, x_newfstatat), X(332, x_statx), X(137, x_statfs), X(138, x_statfs), X(16, x_ioctl),
 	X(319, x_memfd_create), X(9, x_mmap), X(10, x_mprotect), X(25, x_mremap), X(28, x_madvise),
 	X(158, x_arch_prctl), X(157, x_prctl), X(97, x_prlimit), X(302, x_prlimit), X(160, x_zero),
-	X(112, x_setsid), X(202, x_futex), X(188, x_nosys), X(189, x_nosys), X(190, x_nosys), X(191, x_nosys), X(192, x_nosys), X(193, x_nosys), X(194, x_nosys), X(195, x_nosys), X(196, x_nosys), X(131, x_sigaltstack), X(234, x_tgkill), X(200, x_tkill), X(128, x_sigtimedwait), X(127, x_sigpending), X(130, x_sigsuspend), X(201, x_time), X(99, x_sysinfo), X(96, x_gettimeofday), X(229, x_clock_getres), X(98, x_getrusage),
+	X(112, x_setsid), X(202, x_futex), X(188, x_nosys), X(189, x_nosys), X(190, x_nosys), X(191, x_nosys), X(192, x_nosys), X(193, x_nosys), X(194, x_nosys), X(195, x_nosys), X(196, x_nosys), X(197, x_nosys), X(198, x_nosys), X(199, x_nosys), X(131, x_sigaltstack), X(234, x_tgkill), X(200, x_tkill), X(128, x_sigtimedwait), X(127, x_sigpending), X(130, x_sigsuspend), X(201, x_time), X(99, x_sysinfo), X(96, x_gettimeofday), X(229, x_clock_getres), X(98, x_getrusage),
 	X(92, x_zero), X(93, x_zero), X(94, x_zero), X(260, x_zero), X(285, x_nosys), X(221, x_zero),
 	X(203, x_zero), X(142, x_zero), X(144, x_zero), X(140, x_zero), X(141, x_zero), X(435, x_nosys),
 	X(274, x_zero),
@@ -476,7 +476,16 @@ void lx_trace(struct abi_ctx *ctx, const struct abi_call *c, long ret)
 {
 	if ((lx_trace_name && !strcmp(ctx->task->name, lx_trace_name)) ||
 	    (lx_trace_pid && ctx->task->pid == lx_trace_pid))
-		kprintf("[trace] %d: nr %llu (%llx %llx %llx) = %ld\n", ctx->task->pid,
+	{
+		char path[96] = "";
+		u64 pa = c->nr == 257 || c->nr == 262 || c->nr == 267 || c->nr == 269 ? c->arg[1] :
+			 c->nr == 2 || c->nr == 4 || c->nr == 6 || c->nr == 21 || c->nr == 59 ? c->arg[0] : 0;
+
+		for (int i = 0; pa && i < 95; i++)
+			if (uaccess_copy_in(ctx->task, &path[i], pa + (u64)i, 1) || !path[i])
+				break;
+		kprintf("[trace] %d: nr %llu (%llx %llx %llx) = %ld %s\n", ctx->task->pid,
 			(unsigned long long)c->nr, (unsigned long long)c->arg[0],
-			(unsigned long long)c->arg[1], (unsigned long long)c->arg[2], ret);
+			(unsigned long long)c->arg[1], (unsigned long long)c->arg[2], ret, path);
+	}
 }

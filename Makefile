@@ -480,6 +480,10 @@ test-host: $(BUILD)/host/run_tests $(BUILD)/fixtures/.stamp $(DARWIN_BINS)
 
 test-boot: $(KERNEL_ELF32) $(USER_TAR) $(SYSROOT)
 	QEMU=$(QEMU) QEMU_MEM=$(QEMU_MEM) BOOT_MODULE=$(USER_TAR) SYSROOT=$(SYSROOT) tools/boot-test.sh $(KERNEL_ELF32)
+	@if [ -f $(WINE_LX_TAR) ] || $(MAKE) -s wine-linux >/dev/null 2>&1; then \
+		QEMU=$(QEMU) BOOT_MODULE=$(USER_TAR) SYSROOT=$(SYSROOT) WINE_MODULE=$(WINE_LX_TAR) \
+			tools/boot-test.sh $(KERNEL_ELF32) 1536; \
+	else echo "boot-test: Wine module not available (make wine-linux failed): Wine run skipped"; fi
 
 # Install onto an emulated dual-boot IDE disk; prove existing partitions are untouched.
 test-disk: $(KERNEL_ELF32) $(USER_TAR) $(SYSROOT)
@@ -529,9 +533,9 @@ wine-linux: $(WINE_LX_TAR)
 $(WINE_LX_TAR): tools/wine_pack.py
 	@mkdir -p $(WINE_LX)/deb
 	@ls $(WINE_LX)/deb/wine64_*.deb >/dev/null 2>&1 || \
-		(cd $(WINE_LX)/deb && apt-get download wine64 libwine libunwind8 liblzma5 libgcc-s1 >/dev/null 2>&1)
+		(cd $(WINE_LX)/deb && apt-get download wine64 libwine libz-mingw-w64 libunwind8 liblzma5 libgcc-s1 >/dev/null 2>&1)
 	@for d in $(WINE_LX)/deb/*.deb; do n=$$(basename $$d .deb); \
 		[ -d $(WINE_LX)/x/$$n ] || { mkdir -p $(WINE_LX)/x/$$n && dpkg-deb -x $$d $(WINE_LX)/x/$$n; }; done
-	$(PYTHON) tools/wine_pack.py $@ $$(command -v $(WINE_STRIP) || echo cp) $(WINE_LX)/x/*
+	WINE_ALL=1 $(PYTHON) tools/wine_pack.py $@ $$(command -v $(WINE_STRIP) || echo cp) $(WINE_LX)/x/*
 
 -include $(KDEPS)

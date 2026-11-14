@@ -7,6 +7,7 @@ Nothing is compiled or executed; files are copied, PE files stripped of debug
 sections with STRIP (a mingw binutils strip, or "cp").
 """
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -65,6 +66,30 @@ def main():
             if p:
                 add(f"{wd}x86_64-windows/{n}.{ext}", p, 0o644, True)
                 break
+    if os.environ.get("WINE_ALL"):             # every PE file: what wine.inf's registration steps load
+        d = os.path.dirname(find(roots, f"{wd}x86_64-windows/ntdll.dll"))
+        for f in sorted(os.listdir(d)):
+            if f.endswith((".dll", ".exe", ".sys", ".drv", ".ocx", ".cpl", ".acm", ".ax", ".tlb", ".mui")):
+                add(f"{wd}x86_64-windows/{f}", os.path.join(d, f), 0o644, True)
+    # Pull in every DLL the packed ones import (objdump reads import tables; nothing is run).
+    srcdir = os.path.dirname(find(roots, f"{wd}x86_64-windows/ntdll.dll"))
+    todo = [n for n in tree if "x86_64-windows/" in n]
+    while todo:
+        cur = todo.pop()
+        dump = subprocess.run(["x86_64-w64-mingw32-objdump", "-x", os.path.join(srcdir, os.path.basename(cur))],
+                             capture_output=True, text=True).stdout
+        deps = [l.split(":", 1)[1].strip().lower() for l in dump.splitlines() if "DLL Name:" in l]
+        deps += [m + ".dll" for m in re.findall(r"__wine_delay_load_(\w+)", dump)]   # delay-load imports
+        for dep in deps:
+            if True:
+                dst = f"{wd}x86_64-windows/{dep}"
+                path = os.path.join(srcdir, dep)
+                if dst not in tree and os.path.exists(path) and not dep.startswith("api-ms"):
+                    add(dst, path, 0o644, True)
+                    todo.append(dst)
+    z = find(roots, "usr/x86_64-w64-mingw32/lib/zlib1.dll")   # user32 imports it (libz-mingw-w64)
+    if z:
+        add(f"{wd}x86_64-windows/zlib1.dll", z, 0o644)
     nls = find(roots, "usr/share/wine/nls")
     for f in sorted(os.listdir(nls)):
         add(f"usr/share/wine/nls/{f}", os.path.join(nls, f), 0o644)
