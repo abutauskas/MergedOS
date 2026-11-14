@@ -95,7 +95,6 @@ KERNEL_C := \
 	kernel/ahci.c \
 	kernel/net/netdev.c \
 	kernel/net/sockets.c \
-	kernel/net/sock_linux.c \
 	kernel/net/virtio_net.c \
 	kernel/net/e1000.c \
 	kernel/kmain.c \
@@ -115,6 +114,12 @@ KERNEL_C := \
 	kernel/ntload.c \
 	kernel/sched.c \
 	kernel/syscall.c \
+	kernel/umm.c \
+	kernel/lxsys.c \
+	kernel/lxpoll.c \
+	kernel/socket.c \
+	kernel/unix.c \
+	kernel/winetest.c \
 	kernel/initrd.c \
 	kernel/monitor.c \
 	kernel/arch/x86_64/cpu.c \
@@ -131,7 +136,8 @@ KERNEL_S := \
 	kernel/arch/x86_64/entry.S \
 	kernel/initrd_blob.S
 
-TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c tests/test_darwin.c tests/test_net.c
+TEST_C := tests/test_main.c tests/test_abi.c tests/test_pe.c tests/test_de_msh.c tests/test_pkg.c tests/test_codec.c tests/test_ui.c tests/test_storage.c tests/test_desktop.c tests/test_fence.c tests/test_filetype.c tests/test_ramfs.c tests/test_darwin.c tests/test_net.c \
+	tests/test_wayland.c src/wayland/wl_wire.c src/wayland/wl_comp.c src/wayland/wl_keymap.c
 
 KOBJS := $(patsubst %,$(BUILD)/obj/%.o,$(basename $(KERNEL_S) $(KERNEL_C) $(SHARED_C) $(UI_C)))
 KDEPS := $(KOBJS:.o=.d)
@@ -235,6 +241,33 @@ $(BUILD)/guest/nettest.linux: src/guest/nettest.c
 		-fno-builtin -s -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $<
 GUEST_BINS += $(BUILD)/guest/nettest.linux
 
+# /dev/mwm end to end (driven by tools/e2e-test.py with the emulated mouse and keyboard).
+$(BUILD)/guest/mwmtest.linux: src/guest/mwmtest.c kernel/include/mergedos/mwm.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -Os -static -nostdlib -ffreestanding -fno-pic -no-pie -I. \
+		-fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables \
+		-fno-builtin -s -Wl,--build-id=none -Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $<
+GUEST_BINS += $(BUILD)/guest/mwmtest.linux
+
+# The Wayland compositor (docs/WAYLAND.md): a static Linux ELF on raw system calls.
+WL_SRC := src/wayland/wl_main.c src/wayland/wl_wire.c src/wayland/wl_comp.c src/wayland/wl_keymap.c
+$(BUILD)/guest/wl_comp.linux: $(WL_SRC) src/wayland/wl.h kernel/include/mergedos/mwm.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -Os -Wall -Wextra -static -nostdlib -ffreestanding -fno-pic -no-pie -I. \
+		-fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables \
+		-fno-builtin -fno-tree-loop-distribute-patterns -s -Wl,--build-id=none \
+		-Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $(WL_SRC)
+GUEST_BINS += $(BUILD)/guest/wl_comp.linux
+
+# In-guest Wayland client (starts wl_comp, shows a window, waits for input); see tools/e2e-test.py.
+$(BUILD)/guest/wlclient.linux: src/guest/wlclient.c src/wayland/wl_wire.c src/wayland/wl.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -Os -Wall -Wextra -static -nostdlib -ffreestanding -fno-pic -no-pie -I. \
+		-fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables \
+		-fno-builtin -fno-tree-loop-distribute-patterns -s -Wl,--build-id=none \
+		-Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ src/guest/wlclient.c src/wayland/wl_wire.c
+GUEST_BINS += $(BUILD)/guest/wlclient.linux
+
 $(eval $(call GUEST_RULE,hello.linux,hello_linux.S))
 $(eval $(call GUEST_RULE,hello.freebsd,hello_freebsd.S))
 $(eval $(call GUEST_RULE,hello.macho,hello_macho.S))
@@ -278,7 +311,12 @@ $(BUILD)/guest/dyntest.musl: src/guest/dyntest.c $(BUILD)/guest/libdyntest-musl.
 		$(MUSL_CC) -O2 -s -DLIBC_NAME='"musl"' -DDLLIB='"/lib/libdyntest-musl.so"' \
 			-o $@ $<; \
 	else echo "note: $(MUSL_CC) not found, dyntest.musl left out"; : > $@; fi
-DYN_BINS := $(BUILD)/guest/dyntest.gnu $(BUILD)/guest/libdyntest.so \
+$(BUILD)/guest/lxtest.linux: src/guest/lxtest.c
+	@mkdir -p $(dir $@)
+	@if command -v $(MUSL_CC) >/dev/null 2>&1; then \
+		$(MUSL_CC) -static -no-pie -O1 -s -o $@ $<; \
+	else echo "note: $(MUSL_CC) not found, lxtest left out"; : > $@; fi
+DYN_BINS := $(BUILD)/guest/lxtest.linux $(BUILD)/guest/dyntest.gnu $(BUILD)/guest/libdyntest.so \
 	    $(BUILD)/guest/dyntest.musl $(BUILD)/guest/libdyntest-musl.so
 GUEST_BINS += $(DYN_BINS)
 
@@ -395,7 +433,7 @@ WINE_PE    := kernel32.dll kernelbase.dll ucrtbase.dll msvcrt.dll advapi32.dll s
 	cmd.exe reg.exe hostname.exe whoami.exe
 WINE_NLS   := locale.nls l_intl.nls c_437.nls c_1252.nls c_20127.nls normnfc.nls normnfd.nls normidna.nls sortdefault.nls
 
-.PHONY: wine wine-optional
+.PHONY: wine wine-optional wine-linux
 wine: $(WINE_TAR)
 
 # Never fails: tests run without Wine when it cannot be fetched.
@@ -469,9 +507,10 @@ $(BUILD)/host/mpkg: tools/mpkg.c $(SHARED_C)
 	@mkdir -p $(dir $@)
 	$(HOSTCC) $(HOST_CFLAGS) -o $@ tools/mpkg.c $(SHARED_C)
 
-$(BUILD)/host/run_tests: $(TEST_C) $(SHARED_C) $(UI_C) $(wildcard tests/*.h)
+$(BUILD)/host/run_tests: $(TEST_C) $(SHARED_C) $(UI_C) $(wildcard tests/*.h) $(BUILD)/guest/wl_comp.linux
 	@mkdir -p $(dir $@)
 	$(HOSTCC) $(HOST_CFLAGS) $(HOST_SAN) -DFIXTURE_DIR=\"$(BUILD)/fixtures\" \
+		-DWL_COMP_BIN=\"$(BUILD)/guest/wl_comp.linux\" \
 		-DDARWIN_ROOT=\"$(DARWIN_ROOT)\" \
 		-o $@ $(TEST_C) $(SHARED_C) $(UI_C)
 
@@ -523,5 +562,18 @@ $(ISO): $(KERNEL_ELF) tools/grub.cfg $(USER_TAR) $(SYSROOT)
 .PHONY: clean
 clean:
 	rm -rf $(BUILD)
+
+# ---- Wine's own Linux stack (loader, ntdll.so, wineserver, PE DLLs) -------------
+# Fetched at build time, never committed, never run on the host; docs/WINE_STACK.md.
+WINE_LX     := $(BUILD)/wine/lx
+WINE_LX_TAR := $(BUILD)/wine/lx.tar
+wine-linux: $(WINE_LX_TAR)
+$(WINE_LX_TAR): tools/wine_pack.py
+	@mkdir -p $(WINE_LX)/deb
+	@ls $(WINE_LX)/deb/wine64_*.deb >/dev/null 2>&1 || \
+		(cd $(WINE_LX)/deb && apt-get download wine64 libwine libunwind8 liblzma5 libgcc-s1 >/dev/null 2>&1)
+	@for d in $(WINE_LX)/deb/*.deb; do n=$$(basename $$d .deb); \
+		[ -d $(WINE_LX)/x/$$n ] || { mkdir -p $(WINE_LX)/x/$$n && dpkg-deb -x $$d $(WINE_LX)/x/$$n; }; done
+	$(PYTHON) tools/wine_pack.py $@ $$(command -v $(WINE_STRIP) || echo cp) $(WINE_LX)/x/*
 
 -include $(KDEPS)

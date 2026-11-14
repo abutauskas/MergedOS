@@ -17,6 +17,7 @@ extern struct nstack net_stack;
 extern bool net_present;
 
 void net_init(void);                            /* probe, start netd, begin DHCP */
+void net_start_poller(void);                    /* bring the NIC up on first use, start netd */
 void net_enter(void);                           /* refresh the stack's clock; call with irqs off */
 u64  net_ms(void);
 int  net_selftest(void);                        /* DHCP lease, ping, DNS, guest HTTP fetch */

@@ -20,6 +20,7 @@ mods=""
 [ -n "$SYSROOT" ] && [ -s "$SYSROOT" ] && mods="$SYSROOT"
 # The ntdll runtime and Wine's DLLs (when fetched): a second module.
 [ -n "${BOOT_MODULE:-}" ] && [ -f "$BOOT_MODULE" ] && mods="${mods:+$mods,}$BOOT_MODULE"
+[ -n "${WINE_MODULE:-}" ] && [ -f "$WINE_MODULE" ] && mods="${mods:+$mods,}$WINE_MODULE"
 mod=""
 [ -n "$mods" ] && mod="-initrd $mods"
 

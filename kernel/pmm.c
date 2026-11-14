@@ -155,10 +155,80 @@ u64 pmm_alloc(void)
 	return 0;
 }
 
+/*
+ * Frames mapped more than once (copy-on-write after fork, shared mappings)
+ * carry extra references in a small hash table; a frame with no entry has
+ * exactly one owner, so the common case costs no memory at all.
+ */
+struct refnode {
+	struct refnode *next;
+	u64 frame;
+	u32 extra;                      /* references beyond the first */
+};
+static struct refnode *reftab[256];
+
+static struct refnode **ref_slot(u64 f)
+{
+	struct refnode **pp = &reftab[(f ^ (f >> 8)) & 255];
+
+	while (*pp && (*pp)->frame != f)
+		pp = &(*pp)->next;
+	return pp;
+}
+
+void pmm_ref(u64 phys)
+{
+	u64 f = phys >> PAGE_SHIFT, flags = irq_save();
+	struct refnode **pp = ref_slot(f);
+
+	if (*pp) {
+		(*pp)->extra++;
+	} else {
+		struct refnode *n = kzalloc(sizeof(*n));
+
+		if (!n)
+			panic("pmm_ref: out of memory for the reference table");
+		n->frame = f;
+		n->extra = 1;
+		*pp = n;
+	}
+	irq_restore(flags);
+}
+
+u32 pmm_ref_entries(void)
+{
+	u32 n = 0;
+
+	for (unsigned i = 0; i < 256; i++)
+		for (struct refnode *r = reftab[i]; r; r = r->next)
+			n++;
+	return n;
+}
+
+u32 pmm_refs(u64 phys)
+{
+	u64 flags = irq_save();
+	struct refnode *n = *ref_slot(phys >> PAGE_SHIFT);
+	u32 r = n ? n->extra + 1 : 1;
+
+	irq_restore(flags);
+	return r;
+}
+
+/* Drop one reference; the frame goes back to the allocator with the last. */
 void pmm_free(u64 phys)
 {
 	u64 f = phys >> PAGE_SHIFT, flags = irq_save();
+	struct refnode **pp = ref_slot(f), *n = *pp;
 
+	if (n) {
+		if (--n->extra == 0) {
+			*pp = n->next;
+			kfree(n);
+		}
+		irq_restore(flags);
+		return;
+	}
 	if (f >= nframes || !frame_used(f))
 		panic("pmm_free: bad or double free of frame %llx", (unsigned long long)phys);
 	frame_clear(f);

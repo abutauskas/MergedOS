@@ -176,7 +176,15 @@ static int loopback_tcp(void)
 	rc = sys(SYS_recvfrom, as, buf, sizeof(buf), 0, 0, 0);
 	if (rc != 4 || buf[0] != 'p')
 		return fail(1, "recv");
-	sys(SYS_write, as, "pong!", 5, 0, 0, 0);
+	{
+		struct { int fd; short events, revents; } pf = { cs, 1, 0 };
+
+		if (sys(7, &pf, 1, 0, 0, 0, 0) != 0)                    /* poll: nothing to read yet */
+			return fail(1, "poll idle");
+		sys(SYS_write, as, "pong!", 5, 0, 0, 0);
+		if (sys(7, &pf, 1, 2000, 0, 0, 0) != 1 || !(pf.revents & 1))
+			return fail(1, "poll POLLIN");
+	}
 	for (int i = 0; i < 100 && sys(SYS_ioctl, cs, 0x541B, &avail, 0, 0, 0) == 0 && !avail; i++)
 		sys(SYS_yield, 0, 0, 0, 0, 0, 0);
 	if (avail != 5)

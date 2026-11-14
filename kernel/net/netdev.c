@@ -18,7 +18,6 @@
 #include <mergedos/task.h>
 #include "hardware_probe/hwprobe.h"
 #include "kernel/net/netdrv.h"
-#include "kernel/net/inet.h"
 
 struct nstack net_stack;
 bool net_present;
@@ -105,6 +104,7 @@ static void net_wake(struct nstack *ns, struct nsock *s)
 {
 	(void)ns;
 	thread_wake(s, 0, SCHED_MAX_THREADS);
+	poll_wake();                            /* poll/select/epoll waiters */
 }
 
 /*

@@ -36,25 +36,40 @@ enum merr {
 	MERR_SRCH,      /* no such process                    */
 	MERR_TIMEDOUT,  /* wait timed out                     */
 	MERR_MFILE,     /* descriptor table full              */
-	/* sockets */
-	MERR_NOTSOCK,         /* not a socket */
-	MERR_DESTADDRREQ,     /* destination address required */
-	MERR_MSGSIZE,         /* message too long */
-	MERR_NOPROTOOPT,      /* protocol option not available */
-	MERR_PROTONOSUPPORT,  /* protocol not supported */
-	MERR_AFNOSUPPORT,     /* address family not supported */
-	MERR_ADDRINUSE,       /* address in use */
-	MERR_ADDRNOTAVAIL,    /* address not available */
-	MERR_NETUNREACH,      /* network unreachable */
-	MERR_CONNABORTED,     /* connection aborted */
-	MERR_CONNRESET,       /* connection reset by peer */
-	MERR_NOBUFS,          /* no buffer space */
-	MERR_ISCONN,          /* already connected */
-	MERR_NOTCONN,         /* not connected */
-	MERR_CONNREFUSED,     /* connection refused */
-	MERR_HOSTUNREACH,     /* host unreachable */
-	MERR_ALREADY,         /* operation already in progress */
-	MERR_INPROGRESS,      /* operation in progress */
+	MERR_LOOP,
+	MERR_NAMETOOLONG,
+	MERR_SPIPE,
+	MERR_XDEV,
+	MERR_NOTSOCK,
+	MERR_ADDRINUSE,
+	MERR_CONNREFUSED,
+	MERR_NOTCONN,
+	MERR_AFNOSUPPORT,
+	MERR_PROTONOSUPPORT,
+	MERR_NOBUFS,
+	MERR_MSGSIZE,
+	MERR_ISCONN,
+	MERR_NXIO,
+	MERR_OVERFLOW,
+	MERR_NOSPC,
+	MERR_ROFS,
+	MERR_CONNRESET,
+	MERR_DESTADDRREQ,
+	MERR_PROTOTYPE,
+	MERR_NODEV,
+	MERR_BUSY,
+	MERR_DEADLK,
+	MERR_FBIG,
+	MERR_ADDRNOTAVAIL,
+	MERR_INPROGRESS,
+	MERR_ALREADY,
+	MERR_NOPROTOOPT,
+	MERR_CONNABORTED,
+	MERR_SHUTDOWN,
+	MERR_MLINK,
+	MERR_NFILE,
+	MERR_NETUNREACH,
+	MERR_HOSTUNREACH,
 	MERR_MAX
 };
 

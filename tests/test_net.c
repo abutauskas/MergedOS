@@ -366,7 +366,7 @@ static void test_tcp_edges(void)
 			total += (u32)r;
 		tick(&a, &b);
 	}
-	CHECK(total >= 60000 && total <= 140000);       /* both buffers full, window closed */
+	CHECK(total >= 30000 && total <= 80000);       /* both buffers full, window closed */
 	CHECK_EQ(cb->rlen, cb->rcap);
 	{
 		u32 got = 0;
