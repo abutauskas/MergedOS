@@ -42,8 +42,10 @@ static void num(int v)
 void *memcpy(void *d, const void *s, unsigned long n);
 void *memcpy(void *d, const void *s, unsigned long n)
 {
+	void *r = d;
+
 	__asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
-	return d;
+	return r;
 }
 
 static int mfd;

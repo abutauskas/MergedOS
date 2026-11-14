@@ -169,6 +169,21 @@ def main():
         m.wait("mwmtest: key 120")
         m.wait("mwmtest: OK")
         m.wait("msh:/>")
+        # The Wayland compositor in the guest: a client connects over AF_UNIX, shares a memfd
+        # buffer, shows a toplevel through /dev/mwm and gets a click and a key.
+        m.send("run /bin/wlclient.linux" + ENTER)
+        m.wait("wlclient: window shown", 120)
+        m.wait("\n")
+        text = m.log.decode(errors="replace")
+        ncx, ncy = map(int, re.findall(r"\[desk\] app window content (\d+) (\d+)", text)[-1])
+        m.monitor("mouse_move %d %d" % (ncx + 30 - (cx + 20), ncy + 25 - (cy + 15)))
+        m.monitor("mouse_button 1")
+        m.monitor("mouse_button 0")
+        m.wait("wlclient: pointer button")
+        m.send("w")
+        m.wait("wlclient: key 17")
+        m.wait("wlclient: OK")
+        m.wait("msh:/>")
         m.send("poweroff" + ENTER)
         rc, log2 = m.finish()
         assert rc == 33, rc

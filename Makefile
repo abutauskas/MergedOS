@@ -246,6 +246,15 @@ $(BUILD)/guest/wl_comp.linux: $(WL_SRC) src/wayland/wl.h kernel/include/mergedos
 		-Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ $(WL_SRC)
 GUEST_BINS += $(BUILD)/guest/wl_comp.linux
 
+# In-guest Wayland client (starts wl_comp, shows a window, waits for input); see tools/e2e-test.py.
+$(BUILD)/guest/wlclient.linux: src/guest/wlclient.c src/wayland/wl_wire.c src/wayland/wl.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=gnu11 -Os -Wall -Wextra -static -nostdlib -ffreestanding -fno-pic -no-pie -I. \
+		-fno-stack-protector -fcf-protection=none -fno-asynchronous-unwind-tables \
+		-fno-builtin -fno-tree-loop-distribute-patterns -s -Wl,--build-id=none \
+		-Wl,-z,noexecstack -Wl,-z,noseparate-code -o $@ src/guest/wlclient.c src/wayland/wl_wire.c
+GUEST_BINS += $(BUILD)/guest/wlclient.linux
+
 $(eval $(call GUEST_RULE,hello.linux,hello_linux.S))
 $(eval $(call GUEST_RULE,hello.freebsd,hello_freebsd.S))
 $(eval $(call GUEST_RULE,hello.macho,hello_macho.S))

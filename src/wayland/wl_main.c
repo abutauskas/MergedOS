@@ -87,8 +87,10 @@ int strcmp(const char *a, const char *b);
 
 void *memcpy(void *d, const void *s, size_t n)
 {
+	void *r = d;
+
 	__asm__ volatile("rep movsb" : "+D"(d), "+S"(s), "+c"(n) : : "memory");
-	return d;
+	return r;
 }
 
 void *memmove(void *d, const void *s, size_t n)
@@ -144,7 +146,7 @@ int strcmp(const char *a, const char *b)
 static struct wl_server srv;
 static int mwm_fd = -1, listen_fd = -1;
 static int cfd[WL_MAX_CLIENTS];
-static bool quiet;
+static bool quiet, mwm_live = true;   /* mwm_live: the device delivers events (not EOF) */
 static unsigned char win_used[256];     /* mwm handles in use */
 static uint8_t wbuf[sizeof(struct mwm_cmd) + (256 << 10)];
 
@@ -306,6 +308,7 @@ static void drop(struct wl_client *c)
 {
 	const int i = (int)(c - srv.cl);
 
+	logs(c->conn.err ? "wl_comp: client dropped after a protocol error\n" : "wl_comp: client gone\n");
 	sys(SYS_close, cfd[i], 0, 0);
 	cfd[i] = -1;
 	wl_client_drop(c);
@@ -320,12 +323,13 @@ static bool read_client(struct wl_client *c)
 	long n;
 	int fds[WL_MAX_FDS], nfd = 0;
 
+	memset(&cm, 0, sizeof(cm));
 	n = sys(SYS_recvmsg, cfd[c - srv.cl], &mh, MSG_DONTWAIT | MSG_CMSG_CLOEXEC);
 	if (n == -EAGAIN)
 		return true;
 	if (n <= 0)
 		return false;
-	for (struct cmsghdr *h = mh.controllen >= sizeof(*h) ? mh.control : NULL; h;) {
+	for (struct cmsghdr *h = cm.h.len > CMSG_ALIGN(sizeof(*h)) ? &cm.h : NULL; h;) {
 		if (h->level == SOL_SOCKET && h->type == SCM_RIGHTS) {
 			nfd = (int)((h->len - CMSG_LEN(0)) / sizeof(int));
 			if (nfd > WL_MAX_FDS)
@@ -348,6 +352,9 @@ static void handle_events(void)
 {
 	struct mwm_event ev[16];
 	long n = sys(SYS_read, mwm_fd, ev, sizeof(ev));
+
+	if (n == 0)
+		mwm_live = false;               /* a plain file (host test): nothing to wait for */
 
 	for (long i = 0; i < n / (long)sizeof(ev[0]); i++) {
 		const struct mwm_event *e = &ev[i];
@@ -450,8 +457,8 @@ static int run(int argc, char **argv, char **envp)
 		cfd[i] = -1;
 	logs("wl_comp: ready\n");
 	for (;;) {
-		struct pollfd pf[1 + WL_MAX_CLIENTS];
-		int idx[1 + WL_MAX_CLIENTS], np = 1;
+		struct pollfd pf[2 + WL_MAX_CLIENTS];
+		int idx[2 + WL_MAX_CLIENTS], np = 1;
 
 		pf[0] = (struct pollfd){ listen_fd, POLLIN, 0 };
 		for (int i = 0; i < WL_MAX_CLIENTS; i++)
@@ -459,8 +466,9 @@ static int run(int argc, char **argv, char **envp)
 				pf[np] = (struct pollfd){ cfd[i], (short)(POLLIN | (srv.cl[i].conn.out_len ? POLLOUT : 0)), 0 };
 				idx[np++] = i;
 			}
-		/* The window device cannot be polled: wake every 10 ms to look at it. */
-		sys(SYS_poll, pf, np, 10);
+		if (mwm_live)
+			pf[np] = (struct pollfd){ mwm_fd, POLLIN, 0 };
+		sys(SYS_poll, pf, np + (mwm_live ? 1 : 0), mwm_live ? -1 : 10);
 		if (pf[0].revents & POLLIN) {
 			const long fd = sys6(SYS_accept4, listen_fd, 0, 0, SOCK_NONBLOCK | SOCK_CLOEXEC, 0, 0);
 			struct wl_client *c = fd >= 0 ? wl_client_add(&srv) : NULL;
