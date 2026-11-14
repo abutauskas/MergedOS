@@ -1,6 +1,7 @@
 /* SPDX-License-Identifier: BSD-2-Clause */
 #include "tests/test.h"
 #include "pkg_translate/pkg_internal.h"
+#include "pkg_translate/squashfs.h"
 
 static u8 scratch_buf[256 * 1024];
 static struct pkg_scratch scratch = { scratch_buf, sizeof(scratch_buf) };
@@ -25,7 +26,7 @@ static void check_payload(const u8 *img, size_t len, const struct pkg_manifest *
 	CHECK_EQ(pkg_payload_exec(img, len, m, &scratch, &exe, &exe_len, path, sizeof(path)), 0);
 	CHECK_EQ(exe_len, elf_len);
 	CHECK(exe && exe_len == elf_len && !memcmp(exe, elf, elf_len));
-	CHECK(strstr(path, "usr/bin/hello") != NULL);
+	CHECK(strstr(path, "bin/hello") != NULL);
 	free(elf);
 }
 
@@ -156,6 +157,118 @@ static void test_app(void)
 	free(exe);
 }
 
+/* deb / rpm / pacman with xz and zstd payloads: same manifest, same program. */
+static void test_modern(void)
+{
+	static const struct {
+		const char *file;
+		enum pkg_format format;
+		enum pkg_codec codec;
+	} cases[] = {
+		{ "pkg/hello_1.0-1_amd64.xz.deb", PKG_DEB, PKG_CODEC_XZ },
+		{ "pkg/hello_1.0-1_amd64.zst.deb", PKG_DEB, PKG_CODEC_ZSTD },
+		{ "pkg/hello-1.0-1.x86_64.xz.rpm", PKG_RPM, PKG_CODEC_XZ },
+		{ "pkg/hello-1.0-1.x86_64.zst.rpm", PKG_RPM, PKG_CODEC_ZSTD },
+		{ "pkg/hello-1.0-1-x86_64.pkg.tar.xz", PKG_PACMAN, PKG_CODEC_XZ },
+		{ "pkg/hello-1.0-1-x86_64.pkg.tar.zst", PKG_PACMAN, PKG_CODEC_ZSTD },
+	};
+
+	for (size_t i = 0; i < ARRAY_SIZE(cases); i++) {
+		struct pkg_manifest m;
+		const char *hint = strrchr(cases[i].file, '/') + 1;
+		size_t len;
+		u8 *img = load_fixture_opt(cases[i].file, &len);
+
+		if (!img) {
+			printf("  (skipped %s: host tool missing)\n", cases[i].file);
+			continue;
+		}
+		CHECK_EQ(pkg_translate(img, len, hint, &scratch, &m), 0);
+		CHECK_EQ(m.format, cases[i].format);
+		CHECK_EQ(m.payload_codec, cases[i].codec);
+		CHECK_STR(m.name, "hello");
+		CHECK_STR(m.version, "1.0-1");
+		CHECK_STR(m.arch, "x86_64");
+		CHECK(find_dep(&m, "glibc") || find_dep(&m, "libc6"));
+		check_payload(img, len, &m);
+		/* The kernel's 96 KiB scratch buffer is enough. */
+		{
+			static u8 small[96 * 1024];
+			struct pkg_scratch s = { small, sizeof(small) };
+			const u8 *exe;
+			size_t exe_len;
+			char path[64];
+
+			CHECK_EQ(pkg_translate(img, len, hint, &s, &m), 0);
+			CHECK_EQ(pkg_payload_exec(img, len, &m, &s, &exe, &exe_len, path, sizeof(path)), 0);
+		}
+		if (i % 2 == 0 || i == 5)
+			torture(img, len, hint);
+		free(img);
+	}
+}
+
+/* AppImage, snap and flatpak: self-contained bundles. */
+static void test_bundles(void)
+{
+	struct pkg_manifest m;
+	const struct pkg_dep *d;
+	char text[1024];
+	size_t len;
+	u8 *img;
+
+	img = load_fixture_opt("pkg/Hello-1.0-x86_64.AppImage", &len);
+	if (img) {
+		CHECK_EQ(pkg_probe(img, len, NULL), PKG_APPIMAGE);
+		CHECK(sqfs_find(img, len) > 0);
+		CHECK_EQ(pkg_translate(img, len, NULL, &scratch, &m), 0);
+		CHECK_STR(m.name, "Hello");
+		CHECK_STR(m.version, "1.0");
+		CHECK_STR(m.summary, "AppImage test bundle");
+		CHECK_STR(m.arch, "x86_64");
+		CHECK_STR(m.executable, "AppRun");
+		CHECK_EQ(m.payload_codec, PKG_CODEC_ZSTD);
+		CHECK(m.flags & PKG_F_RELOCATABLE);
+		CHECK_STR(m.store_prefix, "/pkg/appimage/Hello/1.0");
+		check_payload(img, len, &m);                    /* AppRun -> usr/bin/hello */
+		CHECK(pkg_manifest_print(&m, text, sizeof(text)) > 0);
+		CHECK(strstr(text, "executable   AppRun") != NULL);
+		torture(img, len, NULL);
+		free(img);
+	}
+	img = load_fixture_opt("pkg/hello_1.0_amd64.snap", &len);
+	if (img) {
+		CHECK_EQ(pkg_probe(img, len, NULL), PKG_SNAP);
+		CHECK_EQ(pkg_translate(img, len, NULL, &scratch, &m), 0);
+		CHECK_STR(m.name, "hello");
+		CHECK_STR(m.version, "1.0");
+		CHECK_STR(m.summary, "Snap test bundle");
+		CHECK_STR(m.foreign_arch, "amd64");
+		CHECK_STR(m.arch, "x86_64");
+		CHECK_STR(m.executable, "bin/hello");
+		CHECK_EQ(m.payload_codec, PKG_CODEC_XZ);
+		d = find_dep(&m, "core22");
+		CHECK(d && !strcmp(d->capability, "pkg:snap/core22"));
+		CHECK_STR(m.store_prefix, "/pkg/snap/hello/1.0");
+		check_payload(img, len, &m);
+		torture(img, len, NULL);
+		free(img);
+	}
+	img = load_fixture("pkg/org.example.Hello.flatpak", &len);
+	CHECK_EQ(pkg_probe(img, len, "org.example.Hello.flatpak"), PKG_FLATPAK);
+	CHECK_EQ(pkg_translate(img, len, "org.example.Hello.flatpak", &scratch, &m), 0);
+	CHECK_STR(m.name, "org.example.Hello");
+	CHECK_STR(m.bundle_id, "org.example.Hello");
+	CHECK_STR(m.version, "stable");
+	CHECK_STR(m.arch, "x86_64");
+	CHECK_STR(m.executable, "hello");
+	CHECK(!(m.flags & PKG_F_PAYLOAD_OK));                   /* OSTree objects: not decoded */
+	d = find_dep(&m, "org.freedesktop.Platform/x86_64/23.08");
+	CHECK(d != NULL);
+	torture(img, len, "x.flatpak");
+	free(img);
+}
+
 void test_pkg(void)
 {
 	struct pkg_manifest m;
@@ -258,24 +371,28 @@ void test_pkg(void)
 	torture(img, len, NULL);
 	free(img);
 
-	/* ---- recognised, but beyond this build ------------------------------- */
-	img = load_fixture("neg/hello_modern.deb", &len);       /* control.tar.xz */
-	CHECK_EQ(pkg_translate(img, len, NULL, &scratch, &m), -MERR_NOTSUP);
+	test_modern();
+	test_bundles();
+
+	/* ---- recognised, but damaged ------------------------------------------ */
+	img = load_fixture("neg/hello_modern.deb", &len);       /* garbage control.tar.xz */
+	CHECK_EQ(pkg_translate(img, len, NULL, &scratch, &m), -MERR_NOEXEC);
 	CHECK_EQ(m.format, PKG_DEB);
 	CHECK_EQ(m.meta_codec, PKG_CODEC_XZ);
 	free(img);
 	img = load_fixture("neg/hello-1.0-1-x86_64.pkg.tar.zst", &len);
 	CHECK_EQ(pkg_translate(img, len, "hello-1.0-1-x86_64.pkg.tar.zst", &scratch, &m),
-		 -MERR_NOTSUP);
+		 -MERR_NOEXEC);
 	CHECK_EQ(m.format, PKG_PACMAN);
 	CHECK_EQ(m.meta_codec, PKG_CODEC_ZSTD);
 	free(img);
 	img = load_fixture("neg/hello.snap", &len);
 	CHECK_EQ(pkg_probe(img, len, NULL), PKG_SNAP);
-	CHECK_EQ(pkg_translate(img, len, NULL, &scratch, &m), -MERR_NOTSUP);
+	CHECK_EQ(pkg_translate(img, len, NULL, &scratch, &m), -MERR_NOEXEC);
 	free(img);
-	img = load_fixture("neg/Hello-x86_64.AppImage", &len);
+	img = load_fixture("neg/Hello-x86_64.AppImage", &len);  /* runtime, no squashfs */
 	CHECK_EQ(pkg_probe(img, len, NULL), PKG_APPIMAGE);
+	CHECK_EQ(pkg_translate(img, len, NULL, &scratch, &m), -MERR_NOEXEC);
 	free(img);
 
 	/* ---- not packages / damaged ------------------------------------------ */

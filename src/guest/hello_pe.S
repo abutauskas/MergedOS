@@ -15,6 +15,8 @@
  *   2  IO_STATUS_BLOCK.Information == bytes written
  *   3  bad handle        -> STATUS_INVALID_HANDLE         (0xC0000008)
  *   4  unknown service   -> STATUS_INVALID_SYSTEM_SERVICE (0xC000001C)
+ *   5  NtCreateThreadEx starts a thread (eleven arguments, seven on the stack)
+ *   6  NtWaitForSingleObject joins it; the thread's write is visible; NtClose
  * On success the entry point *returns* 0, like a real main(); the process
  * then ends through the thread-exit thunk the NT personality installs.
  */
@@ -85,6 +87,27 @@ NtBogusService:
 	movl    $0xFFF, %eax
 	syscall
 	ret
+NtCreateThreadEx:
+	movq    %rcx, %r10
+	movl    $0xC2, %eax
+	syscall
+	ret
+NtWaitForSingleObject:
+	movq    %rcx, %r10
+	movl    $0x04, %eax
+	syscall
+	ret
+NtClose:
+	movq    %rcx, %r10
+	movl    $0x0F, %eax
+	syscall
+	ret
+
+/* Thread start routine: store a marker through its argument, return 0. */
+thread_fn:
+	movq    $0x7E57, (%rcx)
+	xorl    %eax, %eax
+	ret
 
 /* Fill in the five stack arguments of NtWriteFile(handle=rcx, ...). */
 .macro WRITE_ARGS len
@@ -127,7 +150,40 @@ entry:
 	cmpl    $0xC000001C, %eax               /* STATUS_INVALID_SYSTEM_SERVICE */
 	jne     fail
 
-	xorl    %eax, %eax                      /* return 0 from the entry point */
+	movl    $5, %ebx                        /* step 5: NtCreateThreadEx, 11 arguments */
+	movq    $0, 0x60(%rsp)                  /* marker the thread sets */
+	leaq    0x58(%rsp), %rcx                /* ThreadHandle (out)     */
+	movl    $0x1FFFFF, %edx                 /* THREAD_ALL_ACCESS      */
+	xorl    %r8d, %r8d                      /* ObjectAttributes       */
+	movq    $-1, %r9                        /* NtCurrentProcess()     */
+	leaq    thread_fn(%rip), %rax
+	movq    %rax, 0x20(%rsp)                /* StartRoutine           */
+	leaq    0x60(%rsp), %rax
+	movq    %rax, 0x28(%rsp)                /* Argument               */
+	movq    $0, 0x30(%rsp)                  /* CreateFlags            */
+	movq    $0, 0x38(%rsp)                  /* ZeroBits               */
+	movq    $0, 0x40(%rsp)                  /* StackSize              */
+	movq    $0, 0x48(%rsp)                  /* MaximumStackSize       */
+	movq    $0, 0x50(%rsp)                  /* AttributeList          */
+	call    NtCreateThreadEx
+	testl   %eax, %eax
+	jnz     fail
+
+	movl    $6, %ebx                        /* step 6: join it, see its work, close it */
+	movq    0x58(%rsp), %rcx
+	xorl    %edx, %edx                      /* not alertable */
+	xorl    %r8d, %r8d                      /* no timeout    */
+	call    NtWaitForSingleObject
+	testl   %eax, %eax
+	jnz     fail
+	cmpq    $0x7E57, 0x60(%rsp)
+	jne     fail
+	movq    0x58(%rsp), %rcx
+	call    NtClose
+	testl   %eax, %eax
+	jnz     fail
+
+	xorl    %eax, %eax                     /* return 0 from the entry point */
 	addq    $0x68, %rsp
 	ret
 fail:

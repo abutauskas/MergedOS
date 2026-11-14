@@ -44,6 +44,7 @@ int main(int argc, char **argv)
 	n = _snprintf(line, sizeof(line), "%d|%5s|%#x|%I64u|%.3f|%c", -7, "abc", 255,
 		      12345678901ULL, 3.14159, 'Z');
 	printf("msvcrt _snprintf: %s (%d)\n", line, n);
-	return (v.dwBuildNumber == 22631 && r.dwBuildNumber == 22631 && sum == 522240 &&
+	/* Wine's kernelbase applies the unmanifested-program version shim (6.2.9200). */
+	return ((v.dwBuildNumber == 22631 || v.dwBuildNumber == 9200) && r.dwBuildNumber == 22631 && sum == 522240 &&
 		strcmp(line, "-7|  abc|0xff|12345678901|3.142|Z") == 0) ? 0 : 1;
 }

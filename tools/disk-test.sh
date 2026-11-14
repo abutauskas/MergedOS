@@ -112,9 +112,14 @@ boot() {        # $1 scenario, $2 kernel command line, $3 log file
 	esac
 	cmdline=$2 log=$3
 	shift 3
+	mods=
+	[ -n "${SYSROOT:-}" ] && [ -s "$SYSROOT" ] && mods=$SYSROOT
+	[ -n "${BOOT_MODULE:-}" ] && [ -f "$BOOT_MODULE" ] && mods="${mods:+$mods,}$BOOT_MODULE"
+	modarg=
+	[ -n "$mods" ] && modarg="-initrd $mods"
 	timeout 120 "$QEMU" -m 64 -no-reboot -display none -serial stdio \
 		-device isa-debug-exit,iobase=0xf4,iosize=0x04 "$@" \
-		-kernel "$KERNEL" -append "$cmdline" >"$log" 2>&1
+		-kernel "$KERNEL" $modarg -append "$cmdline" >"$log" 2>&1
 }
 
 status=0

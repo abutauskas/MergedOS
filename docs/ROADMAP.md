@@ -13,21 +13,28 @@ self-test, GRUB ISO.
 
 Known limits carried forward:
 
-- One task at a time; a task that loops forever hangs the machine.
 - No interrupts: devices are polled.
-- RAM above 4 GiB is not managed.
 - Static executables only.
 - BIOS boot only; QEMU is the only tested platform.
 - Desktop choice is not persisted.
 
 ## M2 - A real kernel core
 
-- IDT for device interrupts, APIC and timer, preemptive round-robin scheduler
+Done (see [KERNEL_PROCESSES.md](KERNEL_PROCESSES.md)): preemptive
+round-robin scheduling of several user processes and threads, per-process
+descriptor tables, `fork`/`vfork`/`clone`/`execve`/`wait4`, threads with
+futexes and TLS, NT threads, signals with handlers and default actions,
+pipes, keyboard stdin and Ctrl-C, a small page-backed kernel allocator,
+demand-backed anonymous memory (1 GiB per process), direct map and frame
+allocator for all RAM. Also from M3: a writable ramfs at `/tmp` and
+`/home/user`.
+
+Still open:
+
+- APIC timer, interrupt-driven devices
 - Per-CPU data via `%gs`/`swapgs`, SMP bring-up
-- Kernel heap (slab), direct map for all RAM
-- `fork`/`clone`, `wait`, threads
-- Signals (and with them `SIGSYS` for unknown BSD/XNU calls)
-- Demand paging and copy-on-write
+- Copy-on-write fork (fork copies the touched pages today)
+- Job control (SIGSTOP/SIGCONT), sessions, `SIGSYS` for unknown BSD/XNU calls
 
 ## M3 - Files and a user-space shell
 
@@ -48,17 +55,20 @@ Known limits carried forward:
 
 - Native drivers: AHCI/NVMe, virtio, USB HID, framebuffer
 - Linux driver-API shim and a first GPL driver module
-- Port of the FreeBSD network stack; sockets for all personalities
+- Own TCP/IP stack (docs/NETWORKING.md, replaces the FreeBSD port): done for virtio-net/e1000, IPv4, AF_INET on the Linux personality; open: IPv6, other personalities
 - UEFI boot
 
 ## M6 - Package store
 
-- xz and zstd codecs
+- xz and zstd codecs (done: single-call decoders, CRC32/CRC64/SHA-256 and
+  XXH64 checks; no xz BCJ filters, no zstd dictionaries)
 - Content-addressed store under `/pkg`, installation, removal
 - Dependency resolution over capabilities; base runtimes for glibc and musl
 - Path views enforced through jails
 - Signature verification
-- AppImage, Snap and Flatpak backends (squashfs)
+- AppImage, Snap and Flatpak backends (squashfs). Done: squashfs 4.0 reader
+  (gzip/xz/zstd/lz4), AppImage and Snap metadata and program extraction,
+  Flatpak bundle metadata. Open: Flatpak payload (OSTree objects), mounting
 
 ## M7 - NT and Darwin user space
 
@@ -67,7 +77,9 @@ Known limits carried forward:
 - Host Wine's Win32 DLLs on the NT personality; target console programs
   first
 - Mach traps and IPC; `dyld` and `libSystem`; target Darwin command-line
-  tools
+  tools. Started: own `dyld` + `libSystem.B.dylib`, BSD/Mach call tables,
+  CLI programs run (docs/DARWIN_USERSPACE.md); Mach IPC, Apple frameworks
+  and real macOS binaries are still open
 - Binary property lists, code-signature parsing
 
 ## M8 - Graphics and desktops

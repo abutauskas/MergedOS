@@ -25,6 +25,7 @@ enum desk_action {
 
 enum desk_kind { DESK_WIN_TERMINAL, DESK_WIN_FILES, DESK_WIN_SYSTEM, DESK_WIN_FENCE,
 		 DESK_WIN_VIEWER,              /* file viewer: tab strip + text or image */
+		 DESK_WIN_APP,                 /* client pixels (host app_paint): /dev/mwm */
 		 DESK_KINDS, DESK_WIN_NONE = -1 };
 enum desk_state { DESK_NORMAL, DESK_MINIMISED, DESK_MAXIMISED };
 enum desk_part {
@@ -109,6 +110,9 @@ struct desk_host {
 	struct desk_rect (*term_paint)(void *ctx, struct desk_rect clip);
 	const char *(*tab)(void *ctx, int i, bool *active);
 	bool (*image)(void *ctx, struct desk_image *img);
+	/* DESK_WIN_APP: title of window `win`, and its pixels inside `content` (clip: only draw there). */
+	const char *(*title)(void *ctx, int win);
+	void (*app_paint)(void *ctx, int win, struct desk_rect content, struct desk_rect clip);
 };
 
 struct desk_hit {
@@ -126,6 +130,9 @@ void desktop_layout(struct desktop *d, enum de_id layout, int sw, int sh, int te
 /* New window on top; returns its id, or 0 when all slots are taken (or a
  * second terminal is asked for). */
 int  desktop_open(struct desktop *d, enum desk_kind kind);
+/* DESK_WIN_APP window whose content area is cw x ch (clamped to the work area); 0 if full. */
+int  desktop_open_app(struct desktop *d, int cw, int ch);
+bool desktop_set_content(struct desktop *d, int id, int cw, int ch);
 /* Launcher semantics: focus (and restore) the first window of that kind,
  * opening one if there is none. *opened tells which happened. */
 int  desktop_launch(struct desktop *d, enum desk_kind kind, bool *opened);

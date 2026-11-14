@@ -11,7 +11,6 @@
  *
  *   image (preferred base, else NTRT_REBASE_VA)
  *   0x7F000000  runtime: header, code (RX), then data + bss (RW)
- *   0x7FFC0000  stubs for imports the runtime does not provide (RX)
  *   0x7FFD0000  struct ntrt_params, filled by the loader (RW)
  *   0x7FFE0000  KUSER_SHARED_DATA: version fields only (R)
  *   0x7FFE1000  exit thunk (see entry.S)
@@ -21,8 +20,6 @@
 
 #define NTRT_BASE        0x7F000000ULL
 #define NTRT_LIMIT       0x7F400000ULL          /* runtime must end below this */
-#define NTRT_STUB_VA     0x7FFC0000ULL
-#define NTRT_STUB_PAGES  4
 #define NTRT_PARAMS_VA   0x7FFD0000ULL
 #define NTRT_KUSER_VA    0x7FFE0000ULL
 #define NTRT_REBASE_VA   0x200000000ULL         /* where a clashing image is moved */
@@ -62,7 +59,9 @@ struct ntrt_params {
 	unsigned long long stack_base, stack_limit;     /* top (exclusive) and bottom */
 	unsigned int pid, tid;
 	char computer_name[16];
-	char command_line[256];
+	char command_line[1024];                /* UTF-8, Windows quoting          */
+	char image_path[64];                    /* ramdisk path of the program     */
+	unsigned long long image_size;
 };
 
 #endif /* MERGEDOS_NTRT_ABI_H */

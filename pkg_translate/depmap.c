@@ -60,6 +60,9 @@ const char *pkg_family(enum pkg_format f)
 	case PKG_PACMAN:    return "pacman";
 	case PKG_MACOS_APP: return "app";
 	case PKG_MERGED:    return "merged";
+	case PKG_APPIMAGE:  return "appimage";
+	case PKG_SNAP:      return "snap";
+	case PKG_FLATPAK:   return "flatpak";
 	default:            return "misc";
 	}
 }

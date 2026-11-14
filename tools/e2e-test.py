@@ -75,7 +75,7 @@ class Machine:
                 return
             if time.time() > deadline or (self.proc.poll() is not None and not self.sel.select(0)):
                 raise AssertionError(f"timed out waiting for {marker!r}; tail of log:\n"
-                                     + self.log[-600:].decode(errors="replace"))
+                                     + self.log[-1500:].decode(errors="replace"))
             if self.sel.select(0.2):
                 self.log += self.proc.stdout.read() or b""
 
@@ -89,7 +89,7 @@ class Machine:
         except subprocess.TimeoutExpired:
             self.proc.kill()
             raise AssertionError("machine did not stop; tail of log:\n"
-                                 + self.log[-600:].decode(errors="replace"))
+                                 + self.log[-1500:].decode(errors="replace"))
         self.log += self.proc.stdout.read() or b""
         return self.proc.returncode, self.log.decode(errors="replace")
 
@@ -154,6 +154,36 @@ def main():
         m.monitor("mouse_move 40 30")
         m.monitor("mouse_button 0")
         m.wait("[desk] window moved")
+        # /dev/mwm: a client window (the Wayland compositor's interface) gets pixels, a click, a key.
+        m.send("run /bin/mwmtest.linux" + ENTER)
+        m.wait("mwmtest: window created")
+        m.wait("[desk] app window content")
+        m.wait("\n")
+        text = m.log.decode(errors="replace")
+        cx, cy = map(int, re.search(r"\[desk\] app window content (\d+) (\d+)", text).groups())
+        m.monitor("mouse_move %d %d" % (cx + 20 - (tx + 40), cy + 15 - (ty + 30)))
+        m.monitor("mouse_button 1")
+        m.monitor("mouse_button 0")
+        m.wait("mwmtest: button ")
+        m.send("x")
+        m.wait("mwmtest: key 120")
+        m.wait("mwmtest: OK")
+        m.wait("msh:/>")
+        # The Wayland compositor in the guest: a client connects over AF_UNIX, shares a memfd
+        # buffer, shows a toplevel through /dev/mwm and gets a click and a key.
+        m.send("run /bin/wlclient.linux" + ENTER)
+        m.wait("wlclient: window shown", 120)
+        m.wait("\n")
+        text = m.log.decode(errors="replace")
+        ncx, ncy = map(int, re.findall(r"\[desk\] app window content (\d+) (\d+)", text)[-1])
+        m.monitor("mouse_move %d %d" % (ncx + 30 - (cx + 20), ncy + 25 - (cy + 15)))
+        m.monitor("mouse_button 1")
+        m.monitor("mouse_button 0")
+        m.wait("wlclient: pointer button")
+        m.send("w")
+        m.wait("wlclient: key 17")
+        m.wait("wlclient: OK")
+        m.wait("msh:/>")
         m.send("poweroff" + ENTER)
         rc, log2 = m.finish()
         assert rc == 33, rc

@@ -53,6 +53,8 @@ struct task {
 
 /* Load build/fixtures/<rel>; aborts the run if it is missing. Caller frees. */
 u8 *load_fixture(const char *rel, size_t *len);
+/* Same, but NULL when absent (fixtures that need optional host tools). */
+u8 *load_fixture_opt(const char *rel, size_t *len);
 
 void test_binfmt(void);
 void test_pe(void);
@@ -60,11 +62,17 @@ void test_dispatch(void);
 void test_de_policy(void);
 void test_msh(void);
 void test_pkg(void);
+void test_codec(void);
+void test_squashfs(void);
 void test_ui(void);
 void test_storage(void);
 void test_desktop(void);
 void test_fence(void);
 void test_filetype(void);
+void test_ramfs(void);
+void test_wayland(void);
+void test_darwin(void);
+void test_net(void);
 
 /* Recording back end for the ui/ toolkit (test_main.c). */
 extern char mock_draw_log[8192];

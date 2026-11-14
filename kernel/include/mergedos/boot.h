@@ -27,6 +27,7 @@ struct mb1_info {
 } MOS_PACKED;
 
 #define MB1_INFO_CMDLINE     (1u << 2)
+#define MB1_INFO_MODS        (1u << 3)
 #define MB1_INFO_MMAP        (1u << 6)
 #define MB1_INFO_LOADER_NAME (1u << 9)
 #define MB1_INFO_FRAMEBUFFER (1u << 12)
@@ -49,6 +50,8 @@ struct boot_mmap_entry {
 	u32 type;
 };
 
+#define BOOT_MODS_MAX 4
+
 struct boot_info {
 	char cmdline[256];
 	char loader[48];
@@ -58,6 +61,9 @@ struct boot_info {
 	u64  fb_addr;
 	u32  fb_width, fb_height, fb_bpp, fb_pitch;
 	u8   fb_type;           /* 0 indexed, 1 RGB, 2 EGA text */
+	u64  mod_start, mod_end;        /* envelope of all boot modules (physical), 0 if none */
+	u32  nmods;
+	struct { u64 start, end; } mods[BOOT_MODS_MAX];     /* each module */
 };
 
 void boot_info_init(u32 magic, u64 mbi_phys);

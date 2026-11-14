@@ -377,7 +377,7 @@ static const char keymap[2][0x3A] = {
 
 static int keyboard_poll(void)
 {
-	static bool shift, extended;
+	static bool shift, extended, ctrl;
 	u8 status, sc;
 
 	/* Mouse bytes share the port: drain them to the mouse driver first. */
@@ -404,6 +404,10 @@ static int keyboard_poll(void)
 		default:   return -1;
 		}
 	}
+	if (sc == 0x1D || sc == 0x9D) {                /* left Ctrl: Ctrl-C, Ctrl-D for programs */
+		ctrl = sc == 0x1D;
+		return -1;
+	}
 	if (sc == 0x2A || sc == 0x36) {
 		shift = true;
 		return -1;
@@ -414,6 +418,8 @@ static int keyboard_poll(void)
 	}
 	if (sc & 0x80 || sc >= 0x3A)                    /* key release / unmapped */
 		return -1;
+	if (ctrl && keymap[0][sc] >= 'a' && keymap[0][sc] <= 'z')
+		return keymap[0][sc] & 0x1F;
 	return keymap[shift][sc] ? keymap[shift][sc] : -1;
 }
 
@@ -446,6 +452,8 @@ static int serial_poll(void)
 	return c;
 }
 
+bool (*console_key_hook)(int c);
+
 int console_poll(void)
 {
 	int c;
@@ -453,8 +461,11 @@ int console_poll(void)
 	if (inject_head != inject_tail)
 		return inject_buf[inject_tail++ % sizeof(inject_buf)];
 	c = serial_poll();
-
-	return c >= 0 ? c : keyboard_poll();
+	if (c < 0)
+		c = keyboard_poll();
+	if (c >= 0 && console_key_hook && console_key_hook(c))
+		return -1;                      /* taken by a window (kernel/deskrun.c) */
+	return c;
 }
 
 int console_getc(void)

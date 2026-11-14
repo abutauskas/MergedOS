@@ -27,5 +27,25 @@
 	NTSTUB  NtQueryPerformanceCounter, 0x31
 	NTSTUB  NtProtectVirtualMemory,    0x50
 	NTSTUB  NtQuerySystemTime,         0x5A
+	NTSTUB  NtCreateThreadEx,          0xC2
+	NTSTUB  NtWaitForSingleObject,     0x04
+	NTSTUB  NtTerminateThread,         0x53
+
+/* MergedOS services, table 2 (see abi_dispatch/personality_nt.c). */
+	NTSTUB  mos_open,    0x2000
+	NTSTUB  mos_close,   0x2001
+	NTSTUB  mos_read,    0x2002
+	NTSTUB  mos_write,   0x2003
+	NTSTUB  mos_seek,    0x2004
+	NTSTUB  mos_fstat,   0x2005
+	NTSTUB  mos_stat,    0x2006
+	NTSTUB  mos_readdir, 0x2007
+	NTSTUB  mos_mkdir,   0x2008
+	NTSTUB  mos_unlink,  0x2009
+	NTSTUB  mos_rename,  0x200A
+	NTSTUB  mos_futex,   0x200B
+	NTSTUB  mos_sleep,   0x200C
+	NTSTUB  mos_dup,     0x200D
+	NTSTUB  mos_gettid,  0x200E
 
 	.section .note.GNU-stack, "", @progbits

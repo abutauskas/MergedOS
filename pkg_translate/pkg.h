@@ -48,6 +48,7 @@ enum pkg_codec {
 	PKG_CODEC_XZ,
 	PKG_CODEC_ZSTD,
 	PKG_CODEC_BZIP2,
+	PKG_CODEC_LZ4,          /* squashfs blocks only */
 	PKG_CODEC_UNKNOWN
 };
 
@@ -59,6 +60,9 @@ struct pkg_dep {
 	char capability[80];    /* distro-neutral name it resolves to     */
 	bool base;              /* provided by a MergedOS base runtime or
 				   by the bundle itself, not another package */
+	u16 nimports;           /* .app: symbols the executable binds from this
+				   library (counted for libraries not provided)  */
+	char imports[72];       /* ... the first few, space separated            */
 };
 
 #define PKG_F_SCRIPTS      0x1  /* has install-time maintainer scripts            */
@@ -72,9 +76,10 @@ struct pkg_manifest {
 	char arch[16];                  /* normalised: x86_64, aarch64, noarch */
 	char foreign_arch[16];          /* as written: amd64, x86_64, any ...  */
 	char summary[96];
-	char bundle_id[96];             /* .app: CFBundleIdentifier            */
+	char bundle_id[96];             /* .app: CFBundleIdentifier; flatpak id */
 	char min_os[16];                /* .app: LSMinimumSystemVersion        */
-	char executable[128];           /* .app: path inside the bundle        */
+	char executable[128];           /* .app, AppImage, snap, flatpak:
+					   program path inside the bundle      */
 	enum abi_personality personality;
 	char libc[12];                  /* glibc, musl, libSystem              */
 	enum pkg_codec meta_codec, payload_codec;

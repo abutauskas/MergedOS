@@ -34,6 +34,22 @@ void boot_info_init(u32 magic, u64 mbi_phys)
 	if (mbi->flags & MB1_INFO_LOADER_NAME)
 		copy_phys_string(info.loader, sizeof(info.loader), mbi->boot_loader_name);
 
+	if ((mbi->flags & MB1_INFO_MODS) && mbi->mods_count) {
+		const u32 *mod = phys_to_virt(mbi->mods_addr);  /* start, end, string, reserved */
+
+		/* Each entry: start, end, string, reserved (16 bytes). */
+		for (u32 i = 0; i < mbi->mods_count && info.nmods < BOOT_MODS_MAX; i++, mod += 4) {
+			if (mod[1] <= mod[0])
+				continue;
+			info.mods[info.nmods].start = mod[0];
+			info.mods[info.nmods].end = mod[1];
+			if (!info.mod_end || mod[0] < info.mod_start)
+				info.mod_start = mod[0];
+			if (mod[1] > info.mod_end)
+				info.mod_end = mod[1];
+			info.nmods++;
+		}
+	}
 	if (!(mbi->flags & MB1_INFO_MMAP))
 		panic("boot loader did not provide a memory map");
 

@@ -214,6 +214,26 @@ void gfx_fill(int x, int y, int w, int h, u32 rgb)
 	irq_restore(flags);
 }
 
+void gfx_blit(int x, int y, int w, int h, const u32 *src, size_t stride)
+{
+	int x0 = x < 0 ? -x : 0, y0 = y < 0 ? -y : 0;
+
+	if (!info.active)
+		return;
+	if (x + w > (int)info.width)
+		w = (int)info.width - x;
+	if (y + h > (int)info.height)
+		h = (int)info.height - y;
+	for (int row = y0; row < h; row++) {
+		u64 flags = irq_save();             /* per row: keeps interrupt latency short */
+
+		guard(x + x0, y + row, w - x0, 1);
+		for (int col = x0; col < w; col++)
+			put(x + col, y + row, src[(size_t)row * stride + (size_t)col] & 0xFFFFFF);
+		irq_restore(flags);
+	}
+}
+
 void gfx_blend(int x, int y, u32 rgb, u8 alpha)
 {
 	u32 bg, out = 0;

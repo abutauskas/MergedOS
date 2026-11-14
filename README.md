@@ -63,11 +63,12 @@ MERGEDOS-SELFTEST: PASS (0 failures)
 | Area | Implemented and tested | Not yet (see [roadmap](docs/ROADMAP.md)) |
 |---|---|---|
 | Boot | Multiboot 1 (GRUB, QEMU `-kernel`), 32-bit to long mode, higher-half kernel | UEFI boot, other architectures |
-| Memory | Bitmap frame allocator, 4-level paging, per-task address spaces, W^X mappings, leak check | Kernel heap, demand paging, swap, RAM above 4 GiB |
-| Execution | Ring-3 tasks via `SYSCALL`/`SYSRET`, fault isolation, one user task at a time, preemptible, with a CPU budget that ends runaway programs | Several user processes at once, SMP, signals |
-| Interrupts and threads | PIC remapped, 100 Hz PIT tick, kernel threads with round-robin preemption and sleep | APIC/HPET timers, priorities, mutexes, interrupt-driven keyboard, mouse and disks (still polled) |
-| Binary formats | ELF64 (Linux and FreeBSD brands), PE32+, Mach-O 64 and fat; static ELF and Mach-O images; PE32+ console programs that import DLLs, bound by the kernel's NT loader to a built-in Win32 runtime (about 200 kernel32/ntdll/msvcrt/ucrtbase functions; runs MinGW-w64 programs and Wine's `hostname.exe` / `whoami.exe`) | Dynamic linking: `ld.so`, `dyld`; real DLL files; GUI programs, threads, SEH, 32-bit PE |
-| System calls | `write`, `exit`, `getpid` (+ `exit_group`, `NtWriteFile`, `NtTerminateProcess`) per personality, with each ABI's own numbers, argument passing and error convention; NT also `NtReadFile`, `NtAllocateVirtualMemory`, `NtFreeVirtualMemory`, `NtProtectVirtualMemory`, `NtQueryPerformanceCounter`, `NtQuerySystemTime` | Everything else: files, memory, processes, sockets |
+| Memory | Bitmap frame allocator for all RAM (direct map extended above 4 GiB at boot), 4-level paging, per-process address spaces, W^X mappings, small page-backed `kmalloc`, demand-backed `brk`/`mmap` (1 GiB of virtual memory per process), `fork` copies touched pages, leak check | Copy-on-write, file mappings, swap |
+| Execution | Several ring-3 processes and threads at once via `SYSCALL`/`SYSRET`, preempted by the timer, each with its own kernel stack, address space, TLS bases and FPU state; fault isolation; a CPU budget that ends runaway programs; `fork`/`vfork`/`clone`/`execve`/`wait4`, zombies and orphan reaping; signals with Linux `rt_sigframe` handlers, default actions, SIGCHLD/SIGPIPE, Ctrl-C as SIGINT; futexes; NT threads (see [docs/KERNEL_PROCESSES.md](docs/KERNEL_PROCESSES.md)) | SMP, job control (stop/continue), sessions, priorities |
+| Interrupts and threads | PIC remapped, 100 Hz PIT tick, kernel and user threads with round-robin preemption, sleep and wait channels | APIC/HPET timers, priorities, interrupt-driven keyboard, mouse and disks (still polled) |
+| Binary formats | ELF64 (Linux and FreeBSD brands), PE32+, Mach-O 64 and fat; static ELF and Mach-O images; dynamically linked x86-64 Mach-O command-line programs under MergedOS's own `dyld` and `libSystem.B.dylib` (built with the host clang + ld64.lld); PE32+ console programs that import DLLs, bound by the kernel's NT loader to a built-in Win32 runtime (about 200 kernel32/ntdll/msvcrt/ucrtbase functions; runs MinGW-w64 programs and Wine's `hostname.exe` / `whoami.exe`) | Dynamic linking: `ld.so`, `dyld`; real DLL files; GUI programs, SEH, 32-bit PE |
+| System calls | Per personality, with each ABI's own numbers, argument passing and error convention. Linux: about 70 calls - files (`open`/`openat`, `read`/`write`, `lseek`, `stat` family, `getdents64`, `mkdir`, `unlink`, `rename`), descriptors (`pipe`/`pipe2`, `dup`/`dup2`/`dup3`, `fcntl`), memory, processes, threads (`clone`, `futex`, `set_tid_address`, `arch_prctl`), signals, time. FreeBSD: process and descriptor basics (`fork` with `rdx` = 1 in the child, `wait4`, `execve`, `kill`, `dup2`, ...). XNU: about 55 BSD calls, the Mach traps dyld and libSystem use and `thread_fast_set_cthread_self` (see `docs/DARWIN_USERSPACE.md`). NT: `NtReadFile`, `NtWriteFile`, virtual memory, time, `NtCreateThreadEx`, `NtWaitForSingleObject`, `NtTerminateThread`, `NtClose` | Sockets, `poll`/`select`, `ioctl` beyond terminals, FreeBSD/XNU file calls |
+| Files | Per-process descriptor tables over refcounted open files; writable ramfs at `/tmp` and `/home/user`; everything else from the read-only ramdisk; programs can be executed from ramfs; `read(0)` blocks on the keyboard for the foreground job (line editing, Ctrl-D) | A disk file system, permissions, `chdir` |
 | Graphics and input | 1024x768x32 linear framebuffer (GRUB video mode, or Bochs VBE under QEMU), anti-aliased text (strokes built from the 5x7 dot font, 3x3 samples), rounded boxes, gradient logo, framebuffer text console, PS/2 mouse pointer; `gfx=off` keeps VGA text | USB input |
 | Setup wizard | Widget toolkit (label, button, text box, checkbox, list; mouse hit-testing, Tab focus), logo, wizard steps 1 to 6: language (English, Dutch, Indonesian, Spanish, German), name, password (PBKDF2-HMAC-SHA256, on by default, can be switched off), storage, Wi-Fi (states that there is no wireless driver; Skip), desktop (four layouts, or "recommended", which follows the hardware). Saving restarts the machine | Wi-Fi itself; changing the setup afterwards |
 | Boot and login | Splash with logo and progress bar; password prompt (graphical, or on the text console with `gfx=off`) checked against the stored hash, doubling delay after each wrong attempt; then the saved desktop layout | Disk encryption (the password gates this OS only, not the disk); several users; lock screen |
@@ -78,7 +79,7 @@ MERGEDOS-SELFTEST: PASS (0 failures)
 | Shell | CMD, PowerShell and POSIX names for the same builtins; both path notations; in-kernel | User-space shell, pipes, scripting, VFS-backed commands |
 | Mergedfence | Native `.merged` package format (manifest + payload + SHA-256 trailer, verified before use); domain blocking engine for hosts-file and `||domain^` / `@@||domain^` lists with parent-domain matching; `mergedfence status\|check\|on\|off` (alias `fence`) and a desktop launcher; sample list of fictional `.example`/`.invalid` domains | A network stack and resolver to apply verdicts to (nothing is blocked on the wire yet); signed lists; third-party cookie blocking (only possible inside a browser) |
 | File types | Every file opens: `file <path>` names it (content first, file name second) with a MIME type; `open <path>` shows it in a Viewer window with Text / Hex / Image / Info tabs, or prints an info card and preview in text mode. Shown: UTF-8 text (plain, scripts, JSON, XML/HTML, Markdown, CSV, SVG: as source, not formatted), hex dump of anything, BMP (24/32-bit) and PNG (non-interlaced, all colour types, CRC- and Adler-checked) decoded and scaled to the window, zip / tar / tar.gz listings. Identified with header facts only: JPEG, GIF, WebP, ICO (dimensions), WAV, FLAC, MP3 (rate, channels, length), Ogg, MP4/MOV, MKV/WebM, AVI, PDF (page count, heuristic), DOCX/XLSX/PPTX/EPUB/ODF/JAR/Android APK (by zip members), xz, zstd, bzip2, 7z, RAR, TTF/OTF/WOFF, SQLite, ISO 9660, MBR/GPT images; programs and packages via the existing probes. Samples in `/home/samples` | Decoders for JPEG, GIF, WebP; audio playback (no sound driver); video; rendering PDF or office documents; extracting archives; interlaced PNG; files outside the ramdisk (no VFS); scrolling by wheel or keyboard (Viewer pages with Up/Down) |
-| Packages | `.deb`, `.rpm`, `.apk`, pacman: read, translate metadata, extract and run a static program. `.app`: Info.plist, dependencies, launch. gzip codec | xz and zstd codecs, installation, dependency resolution, AppImage/Snap/Flatpak/DMG backends |
+| Packages | `.deb`, `.rpm`, `.apk`, pacman: read, translate metadata, extract and run a static program. `.app`: Info.plist, dependencies, launch. gzip, xz and zstd codecs. squashfs 4.0 reader (gzip/xz/zstd/lz4); AppImage and Snap: metadata, listing, program extraction; Flatpak bundles: metadata only | bzip2, xz BCJ filters, zstd dictionaries, installation, dependency resolution, Flatpak payload (OSTree), DMG backend |
 
 Two claims in the original project brief need qualifying, and the code is
 written to match the qualified version:
@@ -181,6 +182,9 @@ MergedOS/
 │   ├── pkgfmt.c                format identification
 │   ├── containers.c  tar.c     ar, cpio, ustar readers
 │   ├── inflate.c               gzip decoder
+│   ├── xz.c  zstd.c            xz (LZMA2) and Zstandard decoders
+│   ├── squashfs.c              squashfs 4.0 reader
+│   ├── bundles.c               AppImage, Snap, Flatpak bundles
 │   ├── metadata.c              Debian control, .PKGINFO, RPM headers
 │   ├── appbundle.c             macOS .app bundles
 │   ├── depmap.c                dependency -> capability mapping
@@ -283,7 +287,8 @@ full system inside that budget:
   the firmware memory map: 1/32768 of RAM.
 - **Zero-copy, zero-allocation parsers.** The ramdisk is read in place.
   Executable and package parsers work on caller-supplied buffers and never
-  allocate; the gzip decoder needs about 2.5 KiB of stack.
+  allocate; the gzip decoder needs about 2.5 KiB of stack, xz and zstd take
+  a 28 / 9 KiB work area from the caller.
 - **No kernel floating-point state.** Built with `-mgeneral-regs-only`, so
   kernel entry never saves or restores SSE/x87 registers.
 - **Size-optimised, W^X.** `-Os`; user pages get exactly the permissions the
@@ -372,14 +377,16 @@ msh:/> mpkg inspect /pkg/hello_1.0-1_amd64.deb
 | `.apk` | Alpine | yes | yes | yes |
 | `.pkg.tar.*` | Arch, Manjaro | yes | yes | yes |
 | `.app` bundle | macOS | yes | yes (Info.plist, linked libraries) | launch in place |
-| AppImage, Snap, Flatpak, Nix NAR | cross-distro | yes | no | no |
+| AppImage, Snap | cross-distro | yes | yes (.desktop, snap.yaml) | yes (from squashfs) |
+| Flatpak bundle | cross-distro | yes | yes (ref, key file) | no |
+| Nix NAR | Nix | yes | no | no |
 | `.dmg`, `.pkg` (xar) | macOS | yes | no | no |
 
 "Yes" for the four Linux formats holds when the relevant members are stored
-or **gzip**-compressed. Current Debian, Ubuntu, Fedora and Arch packages
-default to xz or zstd, which this build detects and reports
+or compressed with **gzip, xz or zstd** (the defaults of current Debian,
+Ubuntu, Fedora and Arch packages); bzip2 is detected and reported
 (`recognised, but it needs a codec ... not built in`) rather than
-mis-parsing. Checked against real tools: `dpkg-deb` and `rpm` accept the
+mis-parsing. `mpkg ls` lists a squashfs image, AppImage or snap. Checked against real tools: `dpkg-deb` and `rpm` accept the
 test fixtures; the layer reads a real `rpmbuild` package and a real Ubuntu
 package repacked with gzip, and the extracted programs are byte-identical
 to the originals.

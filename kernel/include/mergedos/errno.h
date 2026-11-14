@@ -26,6 +26,50 @@ enum merr {
 	MERR_AGAIN,     /* try again                          */
 	MERR_RANGE,     /* value or buffer too large          */
 	MERR_NOTTY,     /* not a terminal                     */
+	MERR_NOTDIR,    /* not a directory                    */
+	MERR_ISDIR,     /* is a directory                     */
+	MERR_EXIST,     /* already exists                     */
+	MERR_NOTEMPTY,  /* directory not empty                */
+	MERR_CHILD,     /* no child process to wait for       */
+	MERR_INTR,      /* interrupted by a signal            */
+	MERR_PIPE,      /* write to a pipe nobody reads       */
+	MERR_SRCH,      /* no such process                    */
+	MERR_TIMEDOUT,  /* wait timed out                     */
+	MERR_MFILE,     /* descriptor table full              */
+	MERR_LOOP,
+	MERR_NAMETOOLONG,
+	MERR_SPIPE,
+	MERR_XDEV,
+	MERR_NOTSOCK,
+	MERR_ADDRINUSE,
+	MERR_CONNREFUSED,
+	MERR_NOTCONN,
+	MERR_AFNOSUPPORT,
+	MERR_PROTONOSUPPORT,
+	MERR_NOBUFS,
+	MERR_MSGSIZE,
+	MERR_ISCONN,
+	MERR_NXIO,
+	MERR_OVERFLOW,
+	MERR_NOSPC,
+	MERR_ROFS,
+	MERR_CONNRESET,
+	MERR_DESTADDRREQ,
+	MERR_PROTOTYPE,
+	MERR_NODEV,
+	MERR_BUSY,
+	MERR_DEADLK,
+	MERR_FBIG,
+	MERR_ADDRNOTAVAIL,
+	MERR_INPROGRESS,
+	MERR_ALREADY,
+	MERR_NOPROTOOPT,
+	MERR_CONNABORTED,
+	MERR_SHUTDOWN,
+	MERR_MLINK,
+	MERR_NFILE,
+	MERR_NETUNREACH,
+	MERR_HOSTUNREACH,
 	MERR_MAX
 };
 

@@ -923,13 +923,6 @@ EXPORT(___lc_codepage_func);
 static API int w____mb_cur_max_func(void) { return 4; }
 EXPORT(___mb_cur_max_func);
 
-/* No structured exception dispatch: every frame handler declines. */
-static API int w___C_specific_handler(void *rec, void *frame, void *ctx, void *disp)
-{
-	(void)rec; (void)frame; (void)ctx; (void)disp;
-	return 1;       /* ExceptionContinueSearch */
-}
-EXPORT(__C_specific_handler);
 
 /* Signals are never raised; handlers are accepted and forgotten. */
 static API void *w_signal(int sig, void *handler) { (void)sig; (void)handler; return NULL; }

@@ -15,10 +15,15 @@
 #ifdef MERGEDOS_HOSTED
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 #define mos_snprintf snprintf
+#define mos_zalloc(n) calloc(1, (n))
+#define mos_free free
 #else
 #include <mergedos/kernel.h>
 #define mos_snprintf ksnprintf
+#define mos_zalloc kzalloc
+#define mos_free kfree
 #endif
 
 static inline int mos_tolower(int c)
