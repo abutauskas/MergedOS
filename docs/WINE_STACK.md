@@ -39,5 +39,23 @@ other projects. MergedOS's own ntdll (`src/ntrt`) stays for the console tests.
 
 ## Goal and status
 
-`wine64 cmd.exe /c echo hi` with `wineserver64` as a separate process, run
-from the boot self-test. Status is kept at the end of this file.
+Goal: `wine64 cmd.exe /c echo hi` with `wineserver64` as a separate process,
+run from the boot self-test (`kernel/winetest.c`, needs the Wine module and
+400 MiB of RAM; `qemu -append "winetest [lxtrace] [nowine]"` runs it alone).
+
+Done and covered by `bin/lxtest` (src/guest/lxtest.c, in the boot self-test):
+copy-on-write fork, VMA memory manager (mprotect splits, PROT_NONE, mremap,
+madvise, 128 TiB lazy reservations, hints honoured), memfd + MAP_SHARED,
+AF_UNIX stream/dgram/socketpair/named sockets with SCM_RIGHTS, poll/ppoll/
+select/pselect6/epoll/eventfd, SA_SIGINFO signals with ucontext/fpstate,
+sigaltstack, faults as signals, SA_RESTART, tgkill, rt_sigtimedwait, cwd,
+dirfds, symlinks, /dev and /proc/self files, 1024 descriptors.
+
+Running today: `wine64 --version`; the Wine loader loads `ntdll.so`, starts a
+separate `wineserver64`, creates the prefix, connects, runs `wineboot` which
+spawns `services.exe` and `rundll32` (wine.inf). Not working: `rundll32`
+aborts on an unresolved `user32.dll.CreateDialogParamW` import, so wineboot
+never finishes and `cmd.exe` fails with c0000135 (kernel32 not found in the
+unpopulated prefix). The Wine step of the self-test is therefore reported
+but not counted. Not done: futex REQUEUE/robust lists, timerfd, a real
+`/proc` beyond maps/meminfo/cpuinfo, Wine's debug output is not visible.

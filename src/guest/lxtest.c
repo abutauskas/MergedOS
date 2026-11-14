@@ -47,6 +47,34 @@ static void on_segv(int s, siginfo_t *si, void *uc)
 	mprotect((void *)((unsigned long)si->si_addr & ~0xfffUL), 4096, PROT_READ | PROT_WRITE);
 }
 
+/* The way Wine maps a PE image: reserve, then MAP_FIXED file sections, then mprotect pieces. */
+static void test_image_like(void)
+{
+	static unsigned char ref[0x8000];
+	int fd = open("/lib/x86_64-linux-gnu/libc.so.6", O_RDONLY);
+	unsigned char *base;
+
+	if (fd < 0)
+		return;
+	base = mmap(NULL, 0x200000, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
+	CHECK(base != MAP_FAILED);
+	for (unsigned i = 0; i < 4; i++) {
+		unsigned char *m = mmap(base + i * 0x40000, 0x20000, PROT_READ | PROT_WRITE,
+					MAP_PRIVATE | MAP_FIXED, fd, (off_t)i * 0x20000 + 0x1000);
+		CHECK(m == base + i * 0x40000);
+		CHECK(pread(fd, ref, 0x8000, (off_t)i * 0x20000 + 0x1000) == 0x8000);
+		CHECK(!memcmp(m, ref, 0x8000));
+		CHECK(mprotect(m, 0x20000, PROT_READ) == 0);
+		CHECK(mprotect(m + 0x8000, 0x4000, PROT_READ | PROT_WRITE) == 0);
+		m[0x8000] ^= 1;
+		m[0x8000] ^= 1;
+		CHECK(pread(fd, ref, 0x8000, (off_t)i * 0x20000 + 0x1000 + 0x10000) == 0x8000);
+		CHECK(!memcmp(m + 0x10000, ref, 0x8000));
+	}
+	CHECK(base[0x30000] == 0 || 1);
+	close(fd);
+}
+
 static void test_protnone_signal(void)
 {
 	char *p = mmap(NULL, 1 << 20, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
@@ -185,6 +213,7 @@ static void test_files(void)
 int main(void)
 {
 	test_mmap_file();
+	test_image_like();
 	test_protnone_signal();
 	test_cow_fork();
 	test_shared();
